@@ -230,6 +230,8 @@ export interface InstantlyLead {
   first_name?: string | null
   last_name?: string | null
   company_name?: string | null
+  job_title?: string | null
+  verification_status?: number | null
   timestamp_created?: string
   timestamp_updated?: string
   timestamp_last_contact?: string | null

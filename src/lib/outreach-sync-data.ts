@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { interestLabel, leadStatus, stripVendorFooter, trimQuotedReply } from '@/lib/outreach-metrics'
+import { buildRoleFilterCompanyAliases, roleFilterCategory, roleFilterTitle } from './lead-role-filter'
 import type { InstantlyEmail, InstantlyLeadPageItem } from '@/lib/instantly'
 
 /** Only explicitly selected provider fields may enter client-readable JSON. */
@@ -153,16 +154,54 @@ export function messageForAssignment(assignment: Assignment | null, email: Insta
   }
 }
 
+/** Display links are canonical profile URLs only; never persist credentials, queries or redirects. */
+export function leadLinkedInUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length > 2000) return null
+  try {
+    const url = new URL(value.trim())
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port
+      || !/^(?:www\.|[a-z]{2}\.)?linkedin\.com$/i.test(url.hostname)) return null
+    const match = url.pathname.match(/^\/in\/([a-zA-Z0-9_-]{1,200})\/?$/)
+    return match ? `https://www.linkedin.com/in/${match[1]}` : null
+  } catch { return null }
+}
+
+function profileText(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value !== 'string') continue
+    const text = sequencePlainText(value).replace(/\p{Cc}/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)
+    if (text) return text
+  }
+  return null
+}
+
+/** Only native verification evidence is authoritative; presence/custom flags never imply verified. */
+export function leadEmailVerification(value: unknown): 'verified' | 'unverified' | 'unknown' {
+  if (value === 1) return 'verified'
+  return typeof value === 'number' && [-1, -2, -3, -4].includes(value) ? 'unverified' : 'unknown'
+}
+
 export function leadForAssignment(assignment: Assignment | null, lead: InstantlyLeadPageItem) {
   if (!assignment || (lead.campaign !== undefined && lead.campaign !== assignment.provider_campaign_id)) return null
-  if (typeof lead.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return null
+  if (typeof lead.email !== 'string' || lead.email.length > 254 || /\p{Cc}/u.test(lead.email) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email)) return null
+  const payload = record(lead.payload)
+  const jobTitle = profileText(lead.job_title, payload.jobTitle, payload.job_title, payload.title)
+  const location = profileText(payload.location, payload.Location)
+  const linkedinUrl = [payload.linkedin_url, payload.linkedinUrl, payload.linkedin, payload.LinkedIn]
+    .map(leadLinkedInUrl).find(Boolean) ?? null
+  const company = profileText(lead.company_name, payload.companyName, payload.company_name) ?? ''
+  const role = jobTitle ? roleFilterCategory(roleFilterTitle(jobTitle, buildRoleFilterCompanyAliases([company]))) : null
   const dates = [lead.timestamp_last_contact, lead.timestamp_last_reply, lead.timestamp_last_touch,
     lead.last_step_timestamp_executed].map(validTimestamp).filter((value): value is string => value !== null).sort()
   return {
     campaign_id: assignment.id, client_id: assignment.client_id,
     provider_lead_id: typeof lead.id === 'string' ? lead.id : null,
-    email: neutralText(lead.email).toLowerCase(), first_name: neutralText(lead.first_name),
-    last_name: neutralText(lead.last_name), company: neutralText(lead.company_name),
+    email: neutralText(lead.email).toLowerCase(), first_name: profileText(lead.first_name, payload.firstName, payload.first_name) ?? '',
+    last_name: profileText(lead.last_name, payload.lastName, payload.last_name) ?? '', company,
+    job_title: jobTitle, location, linkedin_url: linkedinUrl,
+    email_verification: leadEmailVerification(lead.verification_status),
+    // No supported provider field proves LinkedIn profile verification.
+    linkedin_verified: null, role_category: role,
     status: leadStatus(typeof lead.status === 'number' ? lead.status : null, count(lead.email_reply_count), lead.timestamp_last_contact),
     // The API's last_step_id is a UUID; it does not expose an authoritative
     // mapping to a numbered sequence step. Do not invent a last sent step.

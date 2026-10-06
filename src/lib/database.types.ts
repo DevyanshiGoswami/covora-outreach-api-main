@@ -354,13 +354,13 @@ isOneToOne: false
                   ]
                 },"outreach_leads": {
                   Row: {
-                    "campaign_id": string,"client_id": string,"company": string | null,"email": string,"first_name": string | null,"id": string,"interest": string | null,"last_activity_at": string | null,"last_name": string | null,"last_step": number | null,"provider_lead_id": string | null,"reply_count": number,"status": string
+                    "campaign_id": string,"client_id": string,"company": string | null,"email": string,"email_verification": string,"first_name": string | null,"id": string,"interest": string | null,"job_title": string | null,"last_activity_at": string | null,"last_name": string | null,"last_step": number | null,"linkedin_url": string | null,"linkedin_verified": boolean | null,"location": string | null,"provider_lead_id": string | null,"reply_count": number,"role_category": string | null,"status": string
                   }
                   Insert: {
-                    "campaign_id": string,"client_id": string,"company"?: string | null,"email": string,"first_name"?: string | null,"id"?: string,"interest"?: string | null,"last_activity_at"?: string | null,"last_name"?: string | null,"last_step"?: number | null,"provider_lead_id"?: string | null,"reply_count"?: number,"status"?: string
+                    "campaign_id": string,"client_id": string,"company"?: string | null,"email": string,"email_verification"?: string,"first_name"?: string | null,"id"?: string,"interest"?: string | null,"job_title"?: string | null,"last_activity_at"?: string | null,"last_name"?: string | null,"last_step"?: number | null,"linkedin_url"?: string | null,"linkedin_verified"?: boolean | null,"location"?: string | null,"provider_lead_id"?: string | null,"reply_count"?: number,"role_category"?: string | null,"status"?: string
                   }
                   Update: {
-                    "campaign_id"?: string,"client_id"?: string,"company"?: string | null,"email"?: string,"first_name"?: string | null,"id"?: string,"interest"?: string | null,"last_activity_at"?: string | null,"last_name"?: string | null,"last_step"?: number | null,"provider_lead_id"?: string | null,"reply_count"?: number,"status"?: string
+                    "campaign_id"?: string,"client_id"?: string,"company"?: string | null,"email"?: string,"email_verification"?: string,"first_name"?: string | null,"id"?: string,"interest"?: string | null,"job_title"?: string | null,"last_activity_at"?: string | null,"last_name"?: string | null,"last_step"?: number | null,"linkedin_url"?: string | null,"linkedin_verified"?: boolean | null,"location"?: string | null,"provider_lead_id"?: string | null,"reply_count"?: number,"role_category"?: string | null,"status"?: string
                   }
                   Relationships: [
                     {
@@ -717,6 +717,9 @@ isOneToOne: false
                            },
 "list_outreach_conversations":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_channel"?: string,"p_client_id": string,"p_limit"?: number }; Returns: Json
+                           },
+"list_outreach_leads":
+{ Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
                            },
 "mark_outreach_conversation_read":
 { Args: { "p_client_id": string,"p_conversation_id": string }; Returns: undefined
