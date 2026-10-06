@@ -42,6 +42,39 @@ async function fixture(t: TestContext, channel: 'email' | 'linkedin' = 'email') 
   return { a, b, person, workspace: workspace.data!, sender: sender.data!, campaign: campaign?.data ?? null, conversation: thread.data!, message: message.data!, detail, enqueue }
 }
 
+test('preview workspaces deny replies despite real bindings, and recheck preview before claim and dispatch', async t => {
+  for (const channel of ['email', 'linkedin'] as const) {
+    const f = await fixture(t, channel)
+    const setPreview = async (preview: boolean) => assert.ifError((await admin.from('client_features')
+      .update({ config: { presentation_mode: preview ? 'preview' : 'live' } }).eq('client_id',f.a.client.id).eq('feature','outreach_app')).error)
+    await setPreview(true)
+    const detail = await f.detail()
+    assert.equal(detail.canReply,false)
+    assert.equal(detail.canTakeover,false)
+    assert.equal((await f.enqueue()).error?.code,'42501')
+    const owner = await f.person('owner')
+    assert.equal((await f.enqueue(owner.session)).error?.code,'42501')
+    await setPreview(false)
+    const queued = await f.enqueue()
+    assert.ifError(queued.error)
+    await setPreview(true)
+    const refused = await admin.rpc('claim_outreach_reply',{p_command_id:(queued.data as unknown as Command).id})
+    assert.ifError(refused.error)
+    assert.equal(refused.data,null)
+    await setPreview(false)
+    const queuedAgain = await f.enqueue()
+    assert.ifError(queuedAgain.error)
+    const claimed = await admin.rpc('claim_outreach_reply',{p_command_id:(queuedAgain.data as unknown as Command).id})
+    assert.ifError(claimed.error)
+    assert.ok(claimed.data)
+    await setPreview(true)
+    const dispatch = await admin.rpc('dispatch_outreach_reply',{p_command_id:(queuedAgain.data as unknown as Command).id,p_claim_token:(claimed.data as unknown as Claim).claimToken})
+    assert.ifError(dispatch.error)
+    assert.equal(dispatch.data,false)
+    assert.equal((await admin.from('outreach_reply_commands').select('id').eq('client_id',f.a.client.id).eq('status','sending')).data?.length,0)
+  }
+})
+
 test('conversation projections are tenant-private and viewers cannot claim or reply', async (t) => {
   const f = await fixture(t); const viewer = await f.person('client_viewer')
   const d = await f.detail()

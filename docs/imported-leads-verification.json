@@ -1,0 +1,54 @@
+{
+  "date_utc": "2026-10-06T04:03:23.153822+00:00",
+  "scope": "Independent outbound backend only. Synthetic local data; no cloud changes or provider calls.",
+  "migration": "0102_outreach_imported_leads.sql",
+  "migration_sha256": "600e4bcb1110bbfe7ac12bd569a02d4e7774a7378f550fbb0efbb4c33a2b1cfd",
+  "checks": {
+    "unit": {
+      "passed": 220,
+      "failed": 0
+    },
+    "tooling": {
+      "passed": 6,
+      "failed": 0
+    },
+    "full_database_before_final_facet_test": {
+      "passed": 98,
+      "failed": 0
+    },
+    "import_database_including_final_facet_test": {
+      "passed": 6,
+      "failed": 0
+    },
+    "lint": "pass",
+    "typecheck": "pass",
+    "production_build": "pass",
+    "runtime_audit_vulnerabilities": 0,
+    "shadow_migration_replay": "no schema changes found",
+    "diff_check": "pass"
+  },
+  "sql_lint_existing_warnings": [
+    "conversation_summary uses clock_timestamp inside an existing STABLE function",
+    "request_outreach_setup has an existing control-reached-end-without-RETURN warning"
+  ],
+  "source_review": {
+    "source_basename": "verified-leads-comprehensive.json",
+    "source_sha256": "6d9bb04e3ff10936fb8434b955961b90d47333075116877d2eca95de650cd814",
+    "input": 10225,
+    "imported": 10225,
+    "duplicates": 0,
+    "invalid_email": 0,
+    "safe_linkedin_profiles": 10203,
+    "unavailable_linkedin_profiles": 22,
+    "email_verified": 0,
+    "linkedin_prior_source_verified": 10203,
+    "raw_contacts_written_to_repository": false
+  },
+  "preview_reply_fence": [
+    "projection canReply/canTakeover false",
+    "enqueue denied for client admin and agency owner",
+    "claim rejects after preview transition",
+    "dispatch rejects after preview transition",
+    "both email and LinkedIn covered"
+  ]
+}

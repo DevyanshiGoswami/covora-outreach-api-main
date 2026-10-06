@@ -8,8 +8,8 @@ const CAMPAIGN = '6f432aad-8d70-4585-adc3-a272925d8b90'
 const LEAD = '9d375705-20e1-4c5e-a0af-be175888827f'
 const JWT = 'synthetic-user-token'
 const user = { id: USER, aud: 'authenticated', role: 'authenticated', email: 'member@example.test', app_metadata: {}, user_metadata: {}, identities: [], created_at: '2026-10-03T00:00:00Z' }
-const lead = { id: LEAD, clientId: CLIENT, campaignId: CAMPAIGN, campaignName: 'Campaign', firstName: 'Jane', lastName: 'Sample', fullName: 'Jane Sample', company: 'Acme', jobTitle: 'CEO', location: null, email: 'jane@example.test', emailVerification: 'unknown', linkedinUrl: null, linkedinVerified: null, status: 'in_sequence', interest: null, lastActivityAt: null }
-const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], filterOptionsTruncated: false }
+const lead = { id: LEAD, clientId: CLIENT, campaignId: CAMPAIGN, campaignName: 'Campaign', listId: null, listName: null, firstName: 'Jane', lastName: 'Sample', fullName: 'Jane Sample', company: 'Acme', jobTitle: 'CEO', location: null, email: 'jane@example.test', emailVerification: 'unknown', linkedinUrl: null, linkedinVerified: null, status: 'in_sequence', interest: null, lastActivityAt: null }
+const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], lists: [], filterOptionsTruncated: false }
 function request(query = `clientId=${CLIENT}`, authorization = `Bearer ${JWT}`) {
   return new Request(`https://backend.invalid/api/outbound/leads?${query}`, { headers: { authorization, cookie: 'ignored' } })
 }
@@ -95,4 +95,18 @@ test('RPC denied/invalid/unavailable responses return neutral errors; empty work
   }
   const { handlers } = harness({ ...page, leads: [], total: 0, summary: { total: 0, verifiedEmail: 0, withLinkedIn: 0, companies: 0 }, companies: [], campaigns: [] })
   assert.equal((await handlers.GET(request())).status, 200)
+})
+
+test('imported lead list filters project neutral list identity and reject impossible campaign/list combinations', async () => {
+  const listId = '5a3f2313-a651-4c74-ae2f-ec6a0fc8e86c'
+  const row = { ...lead, campaignId: null, campaignName: null, listId, listName: 'Imported prospects' }
+  const imported = { ...page, leads: [row], campaigns: [], lists: [{ id: listId, name: 'Imported prospects' }] }
+  const { handlers,calls } = harness(imported)
+  assert.equal((await handlers.GET(request(`clientId=${CLIENT}&list=${listId}`))).status,200)
+  assert.equal(JSON.parse(calls[1].body).p_list,listId)
+  for (const wrong of [{...row,listId:USER},{...row,listName:null},{...row,campaignId:CAMPAIGN,campaignName:'Live'},{...row,listId:null,listName:null}]) {
+    const bad=harness({...imported,leads:[wrong]})
+    assert.equal((await bad.handlers.GET(request(`clientId=${CLIENT}&list=${listId}`))).status,500)
+  }
+  assert.equal((await harness().handlers.GET(request(`clientId=${CLIENT}&list=bad`))).status,400)
 })

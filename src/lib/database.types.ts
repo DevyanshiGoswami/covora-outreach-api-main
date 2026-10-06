@@ -276,6 +276,31 @@ isOneToOne: false
       referencedColumns: ["id","client_id"]
     }
                   ]
+                },"outreach_imported_leads": {
+                  Row: {
+                    "client_id": string,"company": string,"email": string | null,"email_verification": string,"email_verification_evidence": string | null,"first_name": string,"id": string,"imported_at": string,"job_title": string | null,"last_name": string,"linkedin_url": string | null,"linkedin_verification_evidence": string | null,"linkedin_verified": boolean | null,"list_id": string,"location": string | null,"role_category": string | null,"source_row_id": string,"status": string
+                  }
+                  Insert: {
+                    "client_id": string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"id": string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id": string,"location"?: string | null,"role_category"?: string | null,"source_row_id": string,"status"?: string
+                  }
+                  Update: {
+                    "client_id"?: string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"id"?: string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id"?: string,"location"?: string | null,"role_category"?: string | null,"source_row_id"?: string,"status"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_imported_leads_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_imported_leads_list_id_client_id_fkey"
+      columns: ["list_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_lead_lists"
+      referencedColumns: ["id","client_id"]
+    }
+                  ]
                 },"outreach_invitations": {
                   Row: {
                     "accepted_at": string | null,"accepted_by": string | null,"client_id": string,"created_at": string,"email": string,"expires_at": string,"id": string,"invited_by": string,"role": string,"status": string,"target_membership_version": number | null,"target_user_id": string | null,"token_hash": string
@@ -350,6 +375,25 @@ isOneToOne: false
 isOneToOne: false
       referencedRelation: "outreach_memberships"
       referencedColumns: ["user_id","client_id"]
+    }
+                  ]
+                },"outreach_lead_lists": {
+                  Row: {
+                    "client_id": string,"id": string,"imported_at": string,"name": string,"source_kind": string,"source_sha256": string
+                  }
+                  Insert: {
+                    "client_id": string,"id"?: string,"imported_at"?: string,"name": string,"source_kind"?: string,"source_sha256": string
+                  }
+                  Update: {
+                    "client_id"?: string,"id"?: string,"imported_at"?: string,"name"?: string,"source_kind"?: string,"source_sha256"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_lead_lists_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
     }
                   ]
                 },"outreach_leads": {
@@ -649,7 +693,7 @@ isOneToOne: false
                   ]
                 },"client_outreach_workspaces": {
                   Row: {
-                    "client_id": string | null,"client_name": string | null,"role": string | null
+                    "client_id": string | null,"client_name": string | null,"presentation_mode": string | null,"role": string | null
                   }
                   Relationships: [
                     
@@ -719,7 +763,7 @@ isOneToOne: false
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_channel"?: string,"p_client_id": string,"p_limit"?: number }; Returns: Json
                            },
 "list_outreach_leads":
-{ Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
+{ Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
                            },
 "mark_outreach_conversation_read":
 { Args: { "p_client_id": string,"p_conversation_id": string }; Returns: undefined
