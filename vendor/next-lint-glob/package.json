@@ -1,0 +1,9 @@
+{
+  "name": "@covora/next-lint-glob",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.cjs",
+  "dependencies": {
+    "glob": "13.0.6"
+  }
+}

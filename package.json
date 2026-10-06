@@ -1,0 +1,48 @@
+{
+  "name": "covora-outreach-api",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3011",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test:unit": "NODE_OPTIONS=--conditions=react-server tsx --test tests/unit/*.test.ts && npm run test:tooling",
+    "test:db": "NODE_OPTIONS=--conditions=react-server tsx --test --test-concurrency=1 tests/db/*.test.ts",
+    "test": "npm run test:unit && npm run test:db",
+    "gen:types": "node scripts/gen-types.mjs",
+    "test:tooling": "node --test tests/tooling/*.test.mjs",
+    "test:env": "node scripts/write-test-env.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.108.2",
+    "next": "16.3.8",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "server-only": "0.0.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.3.8",
+    "supabase": "2.119.0",
+    "tsx": "4.22.4",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "next": {
+      "postcss": "^8.5.23",
+      "sharp": "^0.35.4"
+    },
+    "@next/eslint-plugin-next": {
+      "fast-glob": "file:../../../vendor/next-lint-glob"
+    }
+  }
+}

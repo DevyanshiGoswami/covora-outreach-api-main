@@ -1,0 +1,92 @@
+{
+  "recorded_at_utc": "2026-10-06T02:17:32.047705+00:00",
+  "scope": "New isolated local outbound stack only; no old or cloud data/API access",
+  "local_project": "Covora_Outreach_API",
+  "api_port": 60321,
+  "database_port": 60322,
+  "checks": {
+    "database_tests": {
+      "passed": 73,
+      "failed": 0
+    },
+    "typecheck": "passed",
+    "lint": "passed",
+    "generated_types": "real isolated public schema",
+    "environment_override_refusal": "passed",
+    "typegen_override_refusal": "passed",
+    "private_test_environment_file_mode": "0600",
+    "source_manifest_hashes": "verified"
+  },
+  "catalog": {
+    "migration_versions": [
+      "0001",
+      "0090",
+      "0091",
+      "0092",
+      "0093",
+      "0094",
+      "0095",
+      "0096",
+      "0097",
+      "0098"
+    ],
+    "public_base_tables": 30,
+    "public_base_tables_without_rls": 0,
+    "browser_base_table_select_grants": 0,
+    "browser_base_table_write_grants": 0,
+    "anonymous_public_definer_grants": 0,
+    "public_execute_grants_custom_functions": 0,
+    "pg_cron_installed": 0,
+    "remaining_synthetic_clients": 0,
+    "remaining_synthetic_auth_users": 0
+  },
+  "migration_bundle": [
+    {
+      "file": "supabase/migrations/0001_outbound_foundation.sql",
+      "sha256": "d7fc3bbbd122040913265a3879d8e7a96931d7313ade8ddf865b2a255613da95"
+    },
+    {
+      "file": "supabase/migrations/0090_outreach_results.sql",
+      "sha256": "6b62743aeb62443ad66a68f5e34071e3247491e29e982786c2241b4dad0b718d"
+    },
+    {
+      "file": "supabase/migrations/0091_outreach_linkedin_results.sql",
+      "sha256": "f87ed0de8914ebe2739f295ed6a0f3b43d2c5a8f4ea6e36ccdc78d713ab7a581"
+    },
+    {
+      "file": "supabase/migrations/0092_outreach_workspace_access.sql",
+      "sha256": "3ec9ef6c4f4418391b842b1dc4be8ced5df356041fae79ce0263352f5a56a717"
+    },
+    {
+      "file": "supabase/migrations/0093_outreach_team_access.sql",
+      "sha256": "470041d8c9b44b7b674ba8b6ffac1fa82627e69e448b54f795a9f7850ec22a04"
+    },
+    {
+      "file": "supabase/migrations/0094_outreach_account_verification.sql",
+      "sha256": "bb5e1a897dcfecc0a44ebd3289b087498b40972b52e244d0df0920942483ffd8"
+    },
+    {
+      "file": "supabase/migrations/0095_outreach_replies.sql",
+      "sha256": "229300cce9609491be7c24ccb0287ab94a814f38fe9299319bf74f3b5e8ddd70"
+    },
+    {
+      "file": "supabase/migrations/0096_outreach_lead_alerts.sql",
+      "sha256": "725e15aa672ac95bf477d21f6539527a38ec7d3f129989b2604804d0b1726240"
+    },
+    {
+      "file": "supabase/migrations/0097_independent_sender_reservations.sql",
+      "sha256": "42a0b838d564882b7f0030cfbf3a40eabe3ce30607e694460f7ff310cd3eb021"
+    },
+    {
+      "file": "supabase/migrations/0098_outreach_worker_heartbeat.sql",
+      "sha256": "277774be257d47039bd9987c649b398f2d69a69f0c2d6d40e7d7b0b80aff4003"
+    }
+  ],
+  "generated_types_sha256": "68773cd6ba1a661ec9e96dad01d0db40322f2994fbbf1ec829e61b5ab4c621cd",
+  "verification_limits": [
+    "No real provider sends or notification transport",
+    "No cloud schema/configuration verification",
+    "No old portal identities/data copied",
+    "No frontend cutover verified here"
+  ]
+}
