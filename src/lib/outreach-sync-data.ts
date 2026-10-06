@@ -45,8 +45,12 @@ export function sequencePlainText(value: unknown): string {
 }
 
 export function replyPlainText(body: unknown): string {
-  // No HTML fallback: an HTML-only message becomes an empty-text message.
-  return neutralText(trimQuotedReply(typeof record(body).text === 'string' ? record(body).text as string : ''))
+  const content = record(body)
+  // Some sent messages and replies have only HTML. Keep readable text without
+  // rendering markup or loading its links, images or other remote assets.
+  const text = typeof content.text === 'string' && content.text.trim()
+    ? content.text : sequencePlainText(content.html)
+  return neutralText(trimQuotedReply(text))
 }
 
 export function neutralThreadKey(campaignId: string, providerThreadId: string): string {

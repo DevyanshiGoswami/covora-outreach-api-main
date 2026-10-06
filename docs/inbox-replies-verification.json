@@ -1,0 +1,63 @@
+{
+  "recorded_at_utc": "2026-10-06T03:12:03.789395+00:00",
+  "scope": "New isolated local outbound backend only; no cloud modification or provider requests",
+  "local_project": "Covora_Outreach_API",
+  "database_port": 60322,
+  "shadow_port": 60320,
+  "migration": {
+    "file": "supabase/migrations/0100_outreach_inbox_replies.sql",
+    "sha256": "d694c4c4387f71a32d8ed3ad9c25def8d354412dfc9817621a1fcaa5c615216d"
+  },
+  "behavior": "Email reply listing requires a received message in the same conversation and tenant before pagination. Sent history and followups, LinkedIn listing, thread details and authorization remain unchanged.",
+  "checks": {
+    "focused_database_tests": {
+      "passed": 28,
+      "failed": 0,
+      "log": "/tmp/covora-inbox-replies-db.log"
+    },
+    "final_regression_database_tests": {
+      "passed": 3,
+      "failed": 0,
+      "log": "/tmp/covora-inbox-replies-final.log"
+    },
+    "typecheck": "passed",
+    "targeted_lint": "passed",
+    "generated_types": "Fresh local generation; no type shape changes",
+    "fresh_migration_replay": {
+      "command": "supabase db diff --local --schema public,outreach_private",
+      "exit_code": 0,
+      "result": "No schema changes found",
+      "log": "/tmp/covora-inbox-replies-diff.log",
+      "diff_sha256": "b1983079d7a43796d0bbcb309a7141d7d42ed71ad44a97fd0560998fbca54629"
+    },
+    "exact_function_body_match": true,
+    "function_metadata": {
+      "security_definer": true,
+      "config": [
+        "search_path=pg_catalog, public, pg_temp"
+      ],
+      "anon_execute": false,
+      "authenticated_execute": true,
+      "service_execute": false
+    },
+    "tested_cases": [
+      "Sent-only email hidden in all and email filters",
+      "Another conversation or tenant incoming does not qualify it",
+      "LinkedIn sent-only remains visible",
+      "Direct sent-only detail stays accessible to its authorized tenant",
+      "Replied then sent remains visible with full history",
+      "Two-page cold sends cannot starve older inbound keyset pages"
+    ]
+  },
+  "remaining_synthetic_rows": {
+    "clients": 0,
+    "auth_users": 0,
+    "campaigns": 0,
+    "conversations": 0
+  },
+  "generated_types_sha256": "15c394a5c82b26f2d398e524dd6bc117726be9eb7aa7f41064366c13372fbc2d",
+  "limits": [
+    "No cloud changes or live provider transport by this agent",
+    "Full unit/build/runtime audit are unchanged by this SQL-only change and remain root rollout checks"
+  ]
+}

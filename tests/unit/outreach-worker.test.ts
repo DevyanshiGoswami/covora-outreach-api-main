@@ -35,8 +35,41 @@ test('unknown direction, scheduled messages and invalid timestamps fail safe', (
   assert.equal(messageForAssignment(assignment, { ...email, ue_type: 3 })?.direction, 'sent')
 })
 
-test('HTML-only replies never become stored content; sequence markup and tracking are discarded', () => {
-  assert.equal(replyPlainText({ html: '<p>secret html only</p>' }), '')
+test('HTML-only sent and received emails retain readable plain-text history', () => {
+  for (const ue_type of [1, 2, 3]) {
+    const mapped = messageForAssignment(assignment, {
+      ...email, ue_type, body: { html: '<div>Hello &amp; welcome</div><div>Let\'s talk.<br>Thanks!</div>' },
+    })
+    assert.equal(mapped?.body_text, 'Hello & welcome\nLet\'s talk.\nThanks!')
+    assert.equal(mapped?.direction, ue_type === 2 ? 'received' : 'sent')
+    assert.equal('html' in mapped!, false)
+  }
+})
+
+test('reply text prefers nonblank plaintext and falls back for missing or whitespace-only text', () => {
+  assert.equal(replyPlainText({ text: '  Plain text wins.  ', html: '<p>Different HTML copy.</p>' }), 'Plain text wins.')
+  for (const text of [undefined, null, '', ' \t\r\n\u00a0 ']) {
+    assert.equal(replyPlainText({ text, html: '<p>HTML fallback</p>' }), 'HTML fallback')
+  }
+  assert.equal(replyPlainText(null), '')
+  assert.equal(replyPlainText({ text: ' ', html: null }), '')
+})
+
+test('HTML reply fallback trims quoted history and neutralizes provider metadata', () => {
+  assert.equal(replyPlainText({ html: '<p>Interested in Instantly integration.</p><p>Sent with Instantly</p><div>On Tue, Someone wrote:</div><blockquote><p>Old message</p></blockquote>' }), 'Interested in sending engine integration.')
+  assert.equal(replyPlainText({ html: '<p>Reference 0c30ce8f-d671-4c93-a819-112a8ff7b12a</p><p>&gt; Quoted message</p>' }), 'Reference [reference]')
+})
+
+test('HTML fallback discards scripts, styles, image assets, tracking and link destinations', () => {
+  const html = '<style>body { background: url(https://tracking.example/style) }</style>' +
+    '<div style="background-image:url(https://tracking.example/background)" onclick="bad()">Hello</div>' +
+    '<script src="https://tracking.example/code">bad()</script><!-- private comment -->' +
+    '<img src="https://tracking.example/pixel" onerror="bad()" alt="Tracking image">' +
+    '<a href="https://tracking.example/click">Visible link text</a>'
+  assert.equal(replyPlainText({ html }), 'Hello\nVisible link text')
+})
+
+test('sequence markup and tracking are discarded and text remains neutral', () => {
   assert.equal(sequencePlainText('<p>Hello &amp; welcome</p><img src="https://pixel.example"><script>bad()</script><div>Thanks</div>'), 'Hello & welcome\nThanks')
   assert.equal(sequencePlainText('&lt;img src=x&gt;Hello'), 'Hello')
   assert.doesNotMatch(safeOutreachText('Built in Instantly 0c30ce8f-d671-4c93-a819-112a8ff7b12a'), /instantly|0c30ce8f/i)
