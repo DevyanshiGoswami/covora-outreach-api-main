@@ -88,5 +88,6 @@
     "No cloud schema/configuration verification",
     "No old portal identities/data copied",
     "No frontend cutover verified here"
-  ]
+  ],
+  "verification_note": "Historical foundation check; latest activation checks are recorded in linkedin-scope-verification.json."
 }

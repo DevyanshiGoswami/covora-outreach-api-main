@@ -53,11 +53,11 @@ test('ambiguous replies are unknown and never retried; explicit rejection is fai
 })
 
 const liMessage={createdAt:'2026-10-03T12:00:00Z',body:'Interested',sender:null}
-const liContext:ReplyProviderContext={...context,channel:'linkedin',credentialRef:'OUTREACH_HEYREACH_TEST',remoteWorkspaceId:'test-workspace',remoteSenderId:'123',senderAddress:'https://www.linkedin.com/in/sender',remoteConversationId:'thread/123',remoteReplyToId:null,remoteLatestMessageId:null,remoteCampaignId:null,contactAddress:'https://www.linkedin.com/in/contact',latestMessageFingerprint:linkedinMessageFingerprint(liMessage),subject:'',bodyText:'Thanks for your interest'}
+const liContext:ReplyProviderContext={...context,channel:'linkedin',credentialRef:'OUTREACH_HEYREACH_TEST',remoteWorkspaceId:'test-workspace',remoteSenderId:'123',senderAddress:'https://www.linkedin.com/in/sender',remoteConversationId:'thread/123',remoteReplyToId:null,remoteLatestMessageId:null,remoteCampaignId:'42',contactAddress:'https://www.linkedin.com/in/contact',latestMessageFingerprint:linkedinMessageFingerprint(liMessage),subject:'',bodyText:'Thanks for your interest'}
 const chat={id:liContext.remoteConversationId,linkedInAccountId:123,groupChat:false,blockedByMe:false,blockedByParticipant:false,lastMessageAt:liMessage.createdAt,correspondentProfile:{profileUrl:liContext.contactAddress},linkedInAccount:{id:123,authIsValid:true,profileUrl:liContext.senderAddress},messages:[liMessage]}
 const liAccount={id:123,isActive:false,authIsValid:true,profileUrl:liContext.senderAddress}
 const liStatus={accountId:123,status:'Connected',failureReason:null,profile:{profileUrl:liContext.senderAddress}}
-function linkedinReads(patch:Record<string,unknown>={}){return [liAccount,liStatus,{...chat,...patch}]}
+function linkedinReads(patch:Record<string,unknown>={}){return [liAccount,liStatus,{...chat,...patch},{items:[{...chat,...patch,campaignId:42}],hasNextPage:false,nextCursor:null}]}
 
 test('global sending gate blocks preparation and is rechecked before an already prepared send',async()=>{
  const blocked=harness([])
@@ -67,21 +67,21 @@ test('global sending gate blocks preparation and is rechecked before an already 
  const result=await prepareOutreachReply(liContext,h.options)
  assert.equal(result.ok,true);if(!result.ok)return
  assert.deepEqual(await sendOutreachReply(result.prepared,{...h.options,repliesEnabled:false}),{status:'failed',remoteMessageId:null})
- assert.equal(h.calls.length,3)
+ assert.equal(h.calls.length,4)
  assert.deepEqual(await sendOutreachReply(result.prepared,h.options),{status:'failed',remoteMessageId:null})
- assert.equal(h.calls.length,3)
+ assert.equal(h.calls.length,4)
 })
 
 test('LinkedIn replies accept a connected idle sender and validate its account status and conversation before one dispatch',async()=>{
  const h=harness([...linkedinReads(),new Response('',{status:200})])
  const result=await prepareOutreachReply(liContext,h.options);assert.equal(result.ok,true);if(!result.ok)return
  assert.deepEqual(await sendOutreachReply(result.prepared,h.options),{status:'sent',remoteMessageId:null})
- assert.equal(h.calls.length,4);const request=h.calls[3]
+ assert.equal(h.calls.length,5);const request=h.calls[4]
  assert.equal(new URL(request.url).origin,'https://api.heyreach.io');assert.deepEqual(await request.json(),{linkedInAccountId:123,conversationId:'thread/123',message:liContext.bodyText,subject:''})
  assert.equal(h.calls[2].url.includes('thread%2F123'),true)
  assert.deepEqual(h.calls.slice(0,3).map(r=>new URL(r.url).pathname),['/api/public/li_account/GetById','/api/public/li_account/GetAccountStatus/123','/api/public/inbox/GetChatroom/123/thread%2F123'])
  for(const request of h.calls.slice(0,3)){assert.equal(request.method,'GET');assert.equal(request.headers.get('X-API-KEY'),credentials.OUTREACH_HEYREACH_TEST);assert.equal(request.redirect,'error');assert.equal(request.cache,'no-store')}
- assert.equal((await sendOutreachReply(result.prepared,h.options)).status,'failed');assert.equal(h.calls.length,4,'LinkedIn preparation is consumed once')
+ assert.equal((await sendOutreachReply(result.prepared,h.options)).status,'failed');assert.equal(h.calls.length,5,'LinkedIn preparation is consumed once')
 })
 
 test('LinkedIn connection status is required regardless of isActive and malformed or contradictory observations fail closed',async()=>{
@@ -135,7 +135,7 @@ test('LinkedIn status read shares the preparation deadline and aborts without re
 
 test('LinkedIn group, blocked, wrong sender, changed history and unknown sender values are rejected',async()=>{
  for(const patch of [{groupChat:true},{blockedByParticipant:true},{linkedInAccountId:456},{correspondentProfile:{profileUrl:'https://www.linkedin.com/in/other'}},{messages:[{...liMessage,body:'New message'}]},{messages:[{...liMessage,sender:'UNKNOWN'}]}]){
-  const h=harness(linkedinReads(patch));assert.equal((await prepareOutreachReply(liContext,h.options)).ok,false);assert.equal(h.calls.length,3)
+  const h=harness(linkedinReads(patch));assert.equal((await prepareOutreachReply(liContext,h.options)).ok,false);assert.ok(h.calls.length>=3 && h.calls.length<=4)
  }
 })
 
@@ -166,15 +166,15 @@ test('LinkedIn rejection and timeout are not shown as accepted and do not retry'
  for(const [response,status] of [[new Error('private-key'),'unknown'],[new Response('',{status:503}),'unknown'],[new Response('',{status:403}),'failed']] as const){
   const h=harness([...linkedinReads(),response])
   const prepared=await prepareOutreachReply(liContext,h.options);assert.equal(prepared.ok,true);if(!prepared.ok)continue
-  assert.equal((await sendOutreachReply(prepared.prepared,h.options)).status,status);assert.equal(h.calls.length,4)
-  assert.equal((await sendOutreachReply(prepared.prepared,h.options)).status,'failed');assert.equal(h.calls.length,4)
+  assert.equal((await sendOutreachReply(prepared.prepared,h.options)).status,status);assert.equal(h.calls.length,5)
+  assert.equal((await sendOutreachReply(prepared.prepared,h.options)).status,'failed');assert.equal(h.calls.length,5)
  }
 })
 
 test('unexpected nonempty LinkedIn HTTP200 body never becomes a false accepted receipt',async()=>{
  const h=harness([...linkedinReads(),Response.json({error:'ambiguous'})])
  const prepared=await prepareOutreachReply(liContext,h.options);assert.equal(prepared.ok,true);if(!prepared.ok)return
- assert.deepEqual(await sendOutreachReply(prepared.prepared,h.options),{status:'unknown',remoteMessageId:null});assert.equal(h.calls.length,4)
+ assert.deepEqual(await sendOutreachReply(prepared.prepared,h.options),{status:'unknown',remoteMessageId:null});assert.equal(h.calls.length,5)
 })
 
 test('LinkedIn equal-time messages use the same deterministic fingerprint order as the mirror',async()=>{
@@ -182,4 +182,21 @@ test('LinkedIn equal-time messages use the same deterministic fingerprint order 
  const expected=linkedinMessageFingerprint(messages[1])
  const h=harness(linkedinReads({messages}))
  assert.equal((await prepareOutreachReply({...liContext,latestMessageFingerprint:expected},h.options)).ok,true)
+})
+
+test('LinkedIn personal, unmatched and foreign campaign proof never dispatches',async()=>{
+ for(const remoteCampaignId of [null,'0','042','9007199254740992']){
+  const h=harness([]);assert.deepEqual(await prepareOutreachReply({...liContext,remoteCampaignId},h.options),{ok:false,reason:'identity_mismatch'});assert.equal(h.calls.length,0)
+ }
+ for(const proof of [[],[{...chat}],[{...chat,campaignId:99}],[{...chat,campaignId:42,id:'another-thread'}],[{...chat,campaignId:42,correspondentProfile:{profileUrl:'https://www.linkedin.com/in/diowave-lead'}}]]){
+  const h=harness([liAccount,liStatus,chat,{items:proof,hasNextPage:false,nextCursor:null}])
+  assert.equal((await prepareOutreachReply(liContext,h.options)).ok,false)
+  assert.equal(h.calls.some(r=>new URL(r.url).pathname.endsWith('/SendMessage')),false)
+ }
+})
+test('LinkedIn preflight campaign proof request binds approved sender, campaign and exact recipient',async()=>{
+ const h=harness(linkedinReads());const result=await prepareOutreachReply(liContext,h.options);assert.equal(result.ok,true)
+ assert.deepEqual(await h.calls[3].json(),{limit:50,cursor:null,filters:{linkedInAccountIds:[123],campaignIds:[42],leadProfileUrl:liContext.contactAddress}})
+ const changed=harness([liAccount,liStatus,chat,{items:[{...chat,campaignId:42,messages:[{...liMessage,body:'Changed after first read'}]}],hasNextPage:false,nextCursor:null}])
+ assert.deepEqual(await prepareOutreachReply(liContext,changed.options),{ok:false,reason:'changed'})
 })

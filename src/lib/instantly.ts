@@ -133,6 +133,9 @@ export interface InstantlyCampaign {
   id: string
   name: string
   status: number
+  organization?: string
+  email_list?: string[]
+  email_tag_list?: string[] | null
   timestamp_created?: string
   timestamp_updated?: string
   campaign_schedule?: {
@@ -192,6 +195,27 @@ export async function getCampaign(
   options?: InstantlyReadOptions,
 ): Promise<InstantlyCampaign> {
   return instantlyFetch(`/campaigns/${encodeURIComponent(campaignId)}`, { ...options, redactErrors: true })
+}
+
+/** Current sender configuration is checked on every mirror visit. Assignment
+ * approval is explicit in the database; names and copy never establish it.
+ * https://developer.instantly.ai/api-reference/schemas/campaign
+ */
+export function scopedCampaignSenders(campaign: InstantlyCampaign, expectedCampaignId: string,
+  expectedWorkspaceId: string, approvedSenders: readonly string[]): ReadonlySet<string> {
+  const config = z.object({ id: z.uuid(), organization: z.uuid().optional(),
+    email_list: z.array(scopedEmail).min(1).max(500),
+    // Unresolved tags can expand the campaign beyond its explicit email list.
+    // An omitted/empty tag list is supported; no account-tag discovery occurs.
+    email_tag_list: z.array(z.string()).max(0).nullish(),
+  }).safeParse(campaign)
+  const approved = z.array(scopedEmail).min(1).max(500).safeParse(approvedSenders)
+  if (!config.success || !approved.success || config.data.id !== expectedCampaignId
+    || (config.data.organization !== undefined && config.data.organization !== expectedWorkspaceId)
+    || config.data.email_list.some(email => !approved.data.includes(email))) {
+    throw new InstantlyError('Assigned campaign sender scope is unavailable', 403)
+  }
+  return new Set(config.data.email_list)
 }
 
 export interface InstantlyLead {
@@ -337,6 +361,7 @@ export async function getCampaignStepAnalytics(
 
 export interface InstantlyEmail {
   id: string
+  organization_id?: string
   timestamp_created: string
   timestamp_email: string
   subject: string

@@ -24,18 +24,22 @@ async function fixture(t: TestContext, channel: 'email' | 'linkedin' = 'email') 
     else await grantOutreachMembership(p.user.id, a.client.id, role)
     return p
   }
+  const campaign = channel === 'linkedin' ? await admin.from('outreach_campaigns').insert({
+    client_id: a.client.id, channel: 'linkedin', provider_campaign_id: String(Math.floor(Math.random() * 1_000_000_000) + 1), name: 'Approved synthetic LinkedIn campaign',
+  }).select('id,provider_campaign_id').single() : null
+  if (campaign) assert.ifError(campaign.error)
   const workspace = await admin.from('outreach_reply_workspaces').insert({ client_id: a.client.id, channel, remote_workspace_id: randomUUID(), credential_ref: `OUTREACH_${channel === 'email' ? 'INSTANTLY' : 'HEYREACH'}_TEST_${randomUUID().replaceAll('-', '').toUpperCase()}`, enabled: true }).select('*').single()
   assert.ifError(workspace.error)
   const emailSender = `sender-${randomUUID()}@example.test`
   const sender = await admin.from('outreach_reply_senders').insert({ client_id: a.client.id, channel, workspace_id: workspace.data!.id, remote_sender_id: channel === 'email' ? emailSender : `sender-${randomUUID()}`, sender_address: channel === 'email' ? emailSender : 'sender@example.test', sender_label: 'Workspace sender', enabled: true }).select('*').single()
   assert.ifError(sender.error)
-  const thread = await admin.from('outreach_conversations').insert({ client_id: a.client.id, channel, sender_id: sender.data!.id, remote_conversation_id: randomUUID(), contact_name: 'Prospect', contact_address: 'prospect@example.test', subject: 'Hello' }).select('*').single()
+  const thread = await admin.from('outreach_conversations').insert({ client_id: a.client.id, channel, campaign_id: campaign?.data?.id ?? null, sender_id: sender.data!.id, remote_conversation_id: randomUUID(), contact_name: 'Prospect', contact_address: 'prospect@example.test', subject: 'Hello' }).select('*').single()
   assert.ifError(thread.error)
   const message = await admin.from('outreach_conversation_messages').insert({ client_id: a.client.id, conversation_id: thread.data!.id, remote_message_id: randomUUID(), remote_fingerprint: channel === 'linkedin' ? 'fingerprint-first' : null, direction: 'received', body_text: 'Can you tell me more?', sent_at: new Date().toISOString(), sender_label: 'Prospect' }).select('*').single()
   assert.ifError(message.error)
   async function detail(session = a.supabase) { const result = await session.rpc('read_outreach_conversation', { p_client_id: a.client.id, p_conversation_id: thread.data!.id }); assert.ifError(result.error); return result.data as unknown as Detail }
   async function enqueue(session = a.supabase, extra: Record<string, unknown> = {}) { const d = await detail(); return session.rpc('enqueue_outreach_reply', { p_client_id: a.client.id, p_conversation_id: thread.data!.id, p_command_id: randomUUID(), p_expected_version: d.version, p_latest_message_id: d.latestMessageId, p_body: 'Happy to help.', p_takeover: true, ...extra }) }
-  return { a, b, person, workspace: workspace.data!, sender: sender.data!, conversation: thread.data!, message: message.data!, detail, enqueue }
+  return { a, b, person, workspace: workspace.data!, sender: sender.data!, campaign: campaign?.data ?? null, conversation: thread.data!, message: message.data!, detail, enqueue }
 }
 
 test('conversation projections are tenant-private and viewers cannot claim or reply', async (t) => {
@@ -170,7 +174,7 @@ test('disabled replies preserve takeover and intent rejects oversized Unicode or
 test('LinkedIn sync is tenant-bound, idempotent and deterministic for equal-time fingerprints', async (t) => {
   const f = await fixture(t, 'linkedin'); const time = new Date().toISOString()
   assert.ifError((await admin.from('outreach_reply_workspaces').update({ sync_enabled: true }).eq('id', f.workspace.id)).error)
-  const input = { p_sender_id: f.sender.id, p_remote_conversation_id: randomUUID(), p_contact_name: 'LinkedIn prospect', p_contact_address: 'https://linkedin.com/in/prospect', p_subject: '', p_messages: [
+  const input = { p_sender_id: f.sender.id, p_campaign_id: f.campaign!.id, p_remote_campaign_id: f.campaign!.provider_campaign_id, p_sender_version: f.sender.version, p_workspace_version: f.workspace.version, p_remote_conversation_id: randomUUID(), p_contact_name: 'LinkedIn prospect', p_contact_address: 'https://linkedin.com/in/prospect', p_subject: '', p_messages: [
     { fingerprint: 'fingerprint-z', direction: 'received', bodyText: 'Latest tie', sentAt: time, senderLabel: 'Prospect' },
     { fingerprint: 'fingerprint-a', direction: 'sent', bodyText: 'Earlier tie', sentAt: time, senderLabel: 'Workspace sender' },
   ] }
@@ -191,7 +195,7 @@ test('LinkedIn sync is tenant-bound, idempotent and deterministic for equal-time
 
 test('sync control is independent from sending and disabled feature rejects service imports', async (t) => {
   const f = await fixture(t, 'linkedin')
-  const input = { p_sender_id: f.sender.id, p_remote_conversation_id: randomUUID(), p_contact_name: 'Prospect', p_contact_address: 'profile', p_subject: '', p_messages: [] }
+  const input = { p_sender_id: f.sender.id, p_campaign_id: f.campaign!.id, p_remote_campaign_id: f.campaign!.provider_campaign_id, p_sender_version: f.sender.version, p_workspace_version: f.workspace.version, p_remote_conversation_id: randomUUID(), p_contact_name: 'Prospect', p_contact_address: 'profile', p_subject: '', p_messages: [] }
   const workspace = await admin.from('outreach_reply_workspaces').select('version,sync_enabled').eq('id', f.workspace.id).single()
   assert.ifError(workspace.error); assert.equal(workspace.data!.sync_enabled, false)
   assert.ok((await admin.rpc('sync_outreach_linkedin_conversation', input)).error)
@@ -199,6 +203,7 @@ test('sync control is independent from sending and disabled feature rejects serv
   const updated = await admin.from('outreach_reply_workspaces').select('version').eq('id', f.workspace.id).single()
   assert.equal(updated.data!.version, workspace.data!.version)
   assert.ifError((await admin.from('outreach_reply_workspaces').update({ enabled: false }).eq('id', f.workspace.id)).error)
+  input.p_workspace_version = (await admin.from('outreach_reply_workspaces').select('version').eq('id', f.workspace.id).single()).data!.version
   assert.ifError((await admin.rpc('sync_outreach_linkedin_conversation', input)).error)
   assert.ifError((await admin.from('client_features').update({ enabled: false }).eq('client_id', f.a.client.id).eq('feature', 'outreach_app')).error)
   assert.equal((await admin.rpc('sync_outreach_linkedin_conversation', input)).error?.code, '42501')

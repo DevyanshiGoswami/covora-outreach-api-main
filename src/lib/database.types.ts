@@ -159,13 +159,13 @@ isOneToOne: false
                   ]
                 },"outreach_campaigns": {
                   Row: {
-                    "client_id": string,"completed_at": string | null,"created_at": string,"id": string,"messages_purged_at": string | null,"name": string,"provider_campaign_id": string,"schedule": NonNullable<Json>,"status": string,"synced_at": string | null,"totals": NonNullable<Json>,"updated_at": string
+                    "channel": string,"client_id": string,"completed_at": string | null,"created_at": string,"id": string,"messages_purged_at": string | null,"name": string,"provider_campaign_id": string,"schedule": NonNullable<Json>,"status": string,"synced_at": string | null,"totals": NonNullable<Json>,"updated_at": string
                   }
                   Insert: {
-                    "client_id": string,"completed_at"?: string | null,"created_at"?: string,"id"?: string,"messages_purged_at"?: string | null,"name": string,"provider_campaign_id": string,"schedule"?: NonNullable<Json>,"status"?: string,"synced_at"?: string | null,"totals"?: NonNullable<Json>,"updated_at"?: string
+                    "channel"?: string,"client_id": string,"completed_at"?: string | null,"created_at"?: string,"id"?: string,"messages_purged_at"?: string | null,"name": string,"provider_campaign_id": string,"schedule"?: NonNullable<Json>,"status"?: string,"synced_at"?: string | null,"totals"?: NonNullable<Json>,"updated_at"?: string
                   }
                   Update: {
-                    "client_id"?: string,"completed_at"?: string | null,"created_at"?: string,"id"?: string,"messages_purged_at"?: string | null,"name"?: string,"provider_campaign_id"?: string,"schedule"?: NonNullable<Json>,"status"?: string,"synced_at"?: string | null,"totals"?: NonNullable<Json>,"updated_at"?: string
+                    "channel"?: string,"client_id"?: string,"completed_at"?: string | null,"created_at"?: string,"id"?: string,"messages_purged_at"?: string | null,"name"?: string,"provider_campaign_id"?: string,"schedule"?: NonNullable<Json>,"status"?: string,"synced_at"?: string | null,"totals"?: NonNullable<Json>,"updated_at"?: string
                   }
                   Relationships: [
                     {
@@ -763,7 +763,7 @@ isOneToOne: false
 { Args: { "p_invitation_id": string }; Returns: undefined
                            },
 "sync_outreach_linkedin_conversation":
-{ Args: { "p_contact_address": string,"p_contact_name": string,"p_messages": Json,"p_remote_conversation_id": string,"p_sender_id": string,"p_subject": string }; Returns: string
+{ Args: { "p_campaign_id": string,"p_contact_address": string,"p_contact_name": string,"p_messages": Json,"p_remote_campaign_id": string,"p_remote_conversation_id": string,"p_sender_id": string,"p_sender_version": number,"p_subject": string,"p_workspace_version": number }; Returns: string
                            },
 "update_outreach_setup_request":
 { Args: { "p_note": string,"p_request_id": string,"p_status": string }; Returns: undefined

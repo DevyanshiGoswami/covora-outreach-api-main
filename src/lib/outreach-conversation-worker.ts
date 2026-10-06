@@ -25,6 +25,7 @@ export async function runLinkedinConversationBatch(deps: SyncDependencies) {
     try {
       await deps.markAttempt(binding)
       if (!await deps.enabled(binding)) continue
+      if (!binding.campaigns.length) continue
       const key = /^OUTREACH_HEYREACH_[A-Z0-9_]{1,100}$/.test(binding.credentialRef) ? deps.credentials[binding.credentialRef]?.trim() : null
       if (!key) { result.failed++; continue }
       const page = await deps.sync(binding, key)
@@ -51,10 +52,17 @@ export async function syncLinkedinConversations(ctx: CronContext) {
         .eq('channel', 'linkedin').eq('outreach_reply_workspaces.sync_enabled', true)
         .order('sync_started_at', { ascending: true, nullsFirst: true }).order('id').limit(3)
       check(response.error)
-      return (response.data ?? []).map(sender => ({
-        id: sender.id, clientId: sender.client_id, workspaceId: sender.workspace_id, workspaceVersion: sender.outreach_reply_workspaces.version,
-        version: sender.version, credentialRef: sender.outreach_reply_workspaces.credential_ref,
-        remoteSenderId: sender.remote_sender_id, senderAddress: sender.sender_address, senderLabel: sender.sender_label, cursor: sender.sync_cursor,
+      return await Promise.all((response.data ?? []).map(async sender => {
+        const campaigns = await db.from('outreach_campaigns').select('id,provider_campaign_id')
+          .eq('client_id', sender.client_id).eq('channel', 'linkedin').is('messages_purged_at', null).order('id').limit(101)
+        check(campaigns.error)
+        if ((campaigns.data?.length ?? 0) > 100) throw new Error('Conversation campaign scope unavailable')
+        return {
+          id: sender.id, clientId: sender.client_id, workspaceId: sender.workspace_id, workspaceVersion: sender.outreach_reply_workspaces.version,
+          version: sender.version, credentialRef: sender.outreach_reply_workspaces.credential_ref,
+          remoteSenderId: sender.remote_sender_id, senderAddress: sender.sender_address, senderLabel: sender.sender_label, cursor: sender.sync_cursor,
+          campaigns: (campaigns.data ?? []).map(campaign => ({ id: campaign.id, remoteCampaignId: campaign.provider_campaign_id })),
+        }
       }))
     },
     enabled: async binding => {
@@ -73,13 +81,16 @@ export async function syncLinkedinConversations(ctx: CronContext) {
       const response = await db.rpc('sync_outreach_linkedin_conversation', {
         p_sender_id: input.senderId, p_remote_conversation_id: input.remoteConversationId, p_contact_name: input.contactName,
         p_contact_address: input.contactAddress, p_subject: input.subject, p_messages: input.messages,
+        p_campaign_id: input.campaignId, p_remote_campaign_id: input.remoteCampaignId,
+        p_sender_version: binding.version, p_workspace_version: binding.workspaceVersion,
       })
       check(response.error)
     }),
     checkpoint: async (binding, cursor) => {
       const response = await db.from('outreach_reply_senders').update({ sync_cursor: cursor, ...(cursor === null ? { synced_at: new Date().toISOString() } : {}) })
-        .eq('id', binding.id).eq('version', binding.version)
+        .eq('id', binding.id).eq('version', binding.version).select('id').maybeSingle()
       check(response.error)
+      if (!response.data) throw new Error('Conversation binding changed')
     },
   })
 }

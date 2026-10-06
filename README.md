@@ -18,6 +18,10 @@ Run `npm run dev` on port 3011. `/api/health` reports configuration readiness an
 
 Only this product's new hosting/database targets may be changed. The outbound frontend switches its public database URL/key and server API origin together after the new login, API and tenant tests pass. Provision only the Covora pilot; do not bulk-copy the old Auth database or other clients.
 
-No schedules are installed initially. `OUTREACH_REPLIES_ENABLED`, `OUTREACH_SYNC_ENABLED` and `ENABLE_OUTREACH_LEAD_ALERT_EMAILS` default false, in addition to tenant/sender gates. Existing-account verification is read-only at providers. A connection badge never certifies sending readiness. Live messages, campaign launches, alerts and later synchronization activation require their own deliberate rollout.
+The protected `/api/cron/outreach-sync` job runs every minute, with a bounded worker lease and resumable pagination. Global sync and reply flags still default false. The authorized Covora pilot enables `OUTREACH_SYNC_ENABLED` and `OUTREACH_REPLIES_ENABLED` only with its reviewed campaign assignments and tenant/workspace/sender bindings. `ENABLE_OUTREACH_LEAD_ALERT_EMAILS` remains false; no notification schedule is installed.
+
+Email imports validate the exact assigned campaign, workspace and approved sender set before reading campaign messages, leads or analytics. Polling includes received and externally sent messages. LinkedIn imports require explicit campaign assignments and exclude personal and group conversations. With no LinkedIn campaign assignments, the worker makes no inbox history requests. Provider credentials stay in the backend: the email integration needs the existing read scopes plus `emails:create`, not workspace-wide administration. A connection badge alone does not certify sending readiness.
+
+Replies are initiated by a signed-in client or Covora operator. Enabling them does not send a message or launch a campaign. Verify tenant isolation, provider read access, sync heartbeats and the portal composer before handing off; actual delivery remains unverified until an explicitly authorized real reply is sent.
 
 The provider adapters preserve exact sender/conversation identity, latest-history checks and durable single-use dispatch. Unknown send outcomes are not automatically retried.

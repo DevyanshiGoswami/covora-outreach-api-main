@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runLinkedinConversationBatch, type ConversationSyncBinding } from '../../src/lib/outreach-conversation-worker.ts'
 
-const base: ConversationSyncBinding={id:'sender',clientId:'client',workspaceId:'workspace',workspaceVersion:1,version:1,credentialRef:'OUTREACH_HEYREACH_TEST',remoteSenderId:'123',senderAddress:'https://www.linkedin.com/in/sender',senderLabel:'Your LinkedIn',cursor:null}
+const base: ConversationSyncBinding={id:'sender',clientId:'client',workspaceId:'workspace',workspaceVersion:1,version:1,credentialRef:'OUTREACH_HEYREACH_TEST',remoteSenderId:'123',senderAddress:'https://www.linkedin.com/in/sender',senderLabel:'Your LinkedIn',cursor:null,campaigns:[{id:'campaign',remoteCampaignId:'42'}]}
 function harness(bindings: ConversationSyncBinding[]) {
  const calls:string[]=[]
  return {calls, deps:{
@@ -32,4 +32,10 @@ test('failed page retains cursor and cannot starve the next sender',async()=>{
 test('batch bound and deadline prevent an unbounded tenant scan',async()=>{
  const h=harness(Array.from({length:20},(_,i)=>({...base,id:String(i)})));await runLinkedinConversationBatch(h.deps)
  assert.equal(h.calls.filter(c=>c.startsWith('sync:')).length,3)
+})
+
+test('no reviewed campaigns leaves an honest empty LinkedIn inbox without sync or cursor advancement',async()=>{
+ const h=harness([{...base,campaigns:[]}]);const result=await runLinkedinConversationBatch(h.deps)
+ assert.deepEqual(result,{senders:0,conversations:0,failed:0,deferred:0})
+ assert.deepEqual(h.calls,['attempt:sender'])
 })

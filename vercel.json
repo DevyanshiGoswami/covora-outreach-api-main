@@ -2,5 +2,11 @@
   "framework": "nextjs",
   "regions": [
     "sfo1"
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/outreach-sync",
+      "schedule": "* * * * *"
+    }
   ]
 }

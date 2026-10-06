@@ -6,9 +6,10 @@ import type { CronContext } from '@/lib/cron-worker'
 import type { Database } from '@/lib/database.types'
 import { campaignStatus } from '@/lib/outreach-metrics'
 import {
-  getCampaign, getCampaignAnalytics, getCampaignStepAnalytics, getDailyCampaignAnalytics,
+  getCampaign, getCampaignAnalytics, getDailyCampaignAnalytics,
   InstantlyError, listCampaignLeadsPage, listEmails,
-  verifyScopedInstantlyWorkspace, type InstantlyEmail, type InstantlyPage, type InstantlyReadOptions,
+  scopedCampaignSenders, verifyScopedInstantlyWorkspace, type InstantlyCampaign,
+  type InstantlyEmail, type InstantlyPage, type InstantlyReadOptions,
 } from '@/lib/instantly'
 import {
   count, leadForAssignment, messageForAssignment, neutralText, normalizedSchedule,
@@ -21,6 +22,7 @@ type Admin = ReturnType<typeof createSupabaseAdminClient>
 type Campaign = Database['public']['Tables']['outreach_campaigns']['Row']
 type State = Database['public']['Tables']['outreach_sync_state']['Row']
 type Queue = Database['public']['Tables']['outreach_fetch_queue']['Row']
+type EmailScope = { workspaceId: string; senders: ReadonlySet<string> }
 const MINUTE = 60_000
 const DAY = 24 * 60 * MINUTE
 const MIN_START_MS = 7_000
@@ -38,7 +40,8 @@ function check(error: { message: string } | null) {
 }
 
 function assertPage<T>(page: InstantlyPage<T>, cursor?: string | null) {
-  if (!Array.isArray(page.items) || (page.next_starting_after !== undefined && typeof page.next_starting_after !== 'string')) {
+  if (!Array.isArray(page.items) || page.items.length > 100
+    || (page.next_starting_after !== undefined && typeof page.next_starting_after !== 'string')) {
     throw new Error('Sending engine returned an invalid page')
   }
   if (page.items.length > 0 && page.next_starting_after && page.next_starting_after === cursor) {
@@ -52,12 +55,9 @@ async function updateState(admin: Admin, state: State, patch: Database['public']
   Object.assign(state, patch)
 }
 
-async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, options: InstantlyReadOptions & { deadline: number }) {
+async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, remote: InstantlyCampaign, options: InstantlyReadOptions & { deadline: number }) {
   const { deadline } = options
-  const [remote, totals] = await Promise.all([
-    getCampaign(campaign.provider_campaign_id, options),
-    getCampaignAnalytics(campaign.provider_campaign_id, options),
-  ])
+  const totals = await getCampaignAnalytics(campaign.provider_campaign_id, options)
   if (remote.id !== campaign.provider_campaign_id || !remote.name || typeof remote.status !== 'number') {
     throw new Error('Sending engine campaign did not match its assignment')
   }
@@ -120,7 +120,7 @@ async function positiveReplies(admin: Admin, campaignId: string) {
   return response.count ?? 0
 }
 
-async function refreshAnalytics(admin: Admin, campaign: Campaign, state: State, options: InstantlyReadOptions & { deadline: number }) {
+async function refreshAnalytics(admin: Admin, campaign: Campaign, state: State, remote: InstantlyCampaign, options: InstantlyReadOptions & { deadline: number }) {
   const { deadline } = options
   // Date-only API bounds are UTC midnight. Tomorrow includes today's data.
   const end = new Date(Date.now() + DAY).toISOString().slice(0, 10)
@@ -128,17 +128,13 @@ async function refreshAnalytics(admin: Admin, campaign: Campaign, state: State, 
   // three UTC dates to pick up delayed replies and provider adjustments.
   let from = new Date(Date.now() - 2 * DAY).toISOString().slice(0, 10)
   if (!state.daily_synced_at) {
-    const remote = await getCampaign(campaign.provider_campaign_id, options)
     if (remote.id !== campaign.provider_campaign_id || !remote.timestamp_created || !Number.isFinite(Date.parse(remote.timestamp_created))) {
       throw new Error('Sending engine campaign start date is unavailable')
     }
     from = new Date(remote.timestamp_created).toISOString().slice(0, 10)
   }
-  const [daily, steps] = await Promise.all([
-    getDailyCampaignAnalytics(campaign.provider_campaign_id, from, end, options),
-    getCampaignStepAnalytics(campaign.provider_campaign_id, options),
-  ])
-  if (!Array.isArray(daily) || !Array.isArray(steps)) throw new Error('Sending engine analytics shape is unsupported')
+  const daily = await getDailyCampaignAnalytics(campaign.provider_campaign_id, from, end, options)
+  if (!Array.isArray(daily)) throw new Error('Sending engine analytics shape is unsupported')
   const rows = daily.map((day) => {
     if (typeof day.date !== 'string' || !/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(day.date) || !Number.isFinite(Date.parse(day.date))) {
       throw new Error('Sending engine analytics date is invalid')
@@ -155,10 +151,9 @@ async function refreshAnalytics(admin: Admin, campaign: Campaign, state: State, 
     beforeDeadline(deadline)
     check((await admin.from('outreach_campaign_daily').upsert(rows.slice(i, i + 500), { onConflict: 'campaign_id,day' })).error)
   }
-  // ⚠️ VERIFY: the schema documents variants as zero-based, but gives no
-  // indexing contract for step. The authenticated spike returned 401. Keep
-  // step statistics unavailable until a real sample can tie them to copy;
-  // guessing +1 would silently put one email's results on another email.
+  // Step statistics remain unavailable until the provider's step indexing can
+  // be tied to sequence copy. Do not request unused step analytics: a missing
+  // permission on that endpoint must not block daily results or inbox progress.
   await updateState(admin, state, { daily_synced_at: new Date().toISOString() })
 }
 
@@ -176,15 +171,26 @@ async function refreshLeadPage(admin: Admin, campaign: Campaign, state: State, o
   await updateState(admin, state, { lead_cursor: next, ...(next ? {} : { leads_synced_at: new Date().toISOString() }) })
 }
 
-async function saveMessages(admin: Admin, campaign: Campaign, items: InstantlyEmail[]) {
-  const rows = items.map((item) => messageForAssignment(campaign, item)).filter((item) => item !== null)
+async function saveMessages(admin: Admin, campaign: Campaign, items: InstantlyEmail[], scope: EmailScope) {
+  // Validate the entire page before any writes. Even a shared sender may appear
+  // in another client's campaign; a sender match never replaces campaign scope.
+  const scoped = items.map(item => {
+    const address = typeof item?.eaccount === 'string' ? item.eaccount.trim().toLowerCase() : ''
+    if (item?.campaign_id !== campaign.provider_campaign_id || !scope.senders.has(address)
+      || (item.organization_id !== undefined && item.organization_id !== scope.workspaceId)) {
+      throw new Error('Campaign history scope is unavailable')
+    }
+    return { ...item, eaccount: address }
+  })
+  const rows = scoped.map((item) => messageForAssignment(campaign, item)).filter((item) => item !== null)
   if (rows.length) {
     check((await admin.from('outreach_messages').upsert(rows, { onConflict: 'provider_email_id', defaultToNull: false })).error)
   }
   const threadIds = [...new Set(rows.filter((row) => row.direction === 'received' && row.provider_thread_id).map((row) => row.provider_thread_id!))]
   if (threadIds.length) {
-    // Completed thread jobs remain as tombstones. Repeated polling never
-    // burns another request for context that has already been fetched.
+    // Completed context jobs remain tombstones. Periodic campaign polling
+    // includes sent and received messages, so subsequent follow-ups do not
+    // depend on reopening an already fetched thread job.
     check((await admin.from('outreach_fetch_queue').upsert(threadIds.map((threadId) => ({
       campaign_id: campaign.id, client_id: campaign.client_id, provider_thread_id: threadId, lead_email: '',
     })), { onConflict: 'campaign_id,lead_email,provider_thread_id', ignoreDuplicates: true })).error)
@@ -192,31 +198,34 @@ async function saveMessages(admin: Admin, campaign: Campaign, items: InstantlyEm
   return rows.length
 }
 
-async function refreshReplyPage(admin: Admin, campaign: Campaign, state: State, request: InstantlyReadOptions & { deadline: number; beforeAttempt: () => Promise<void> }) {
+async function refreshReplyPage(admin: Admin, campaign: Campaign, state: State, scope: EmailScope, request: InstantlyReadOptions & { deadline: number; beforeAttempt: () => Promise<void> }) {
   const scanStarted = state.reply_scan_started_at ?? new Date().toISOString()
   // Persist the upper bound BEFORE issuing page one. A retry uses exactly the
   // same range, and the first backfill has no lower bound at all.
   if (!state.reply_scan_started_at) await updateState(admin, state, { reply_scan_started_at: scanStarted })
   const page = await listEmails({
-    ...request, campaignId: campaign.provider_campaign_id, emailType: 'received',
+    // Poll all campaign messages, including externally sent follow-ups. The
+    // mapper excludes scheduled/unknown types, and scope validation still runs
+    // over the entire page before any write or checkpoint.
+    ...request, campaignId: campaign.provider_campaign_id,
     startingAfter: state.reply_cursor ?? undefined,
     // Overlap the boundary; provider filtering is not documented as inclusive.
     minTimestampCreated: state.reply_watermark ? new Date(Date.parse(state.reply_watermark) - MINUTE).toISOString() : undefined,
     maxTimestampCreated: scanStarted,
   })
   assertPage(page, state.reply_cursor)
-  const saved = await saveMessages(admin, campaign, page.items)
+  const saved = await saveMessages(admin, campaign, page.items, scope)
   const patch = replyCheckpoint({ cursor: state.reply_cursor, watermark: state.reply_watermark, scanStartedAt: scanStarted,
     nextCursor: page.next_starting_after, itemCount: page.items.length })
   await updateState(admin, state, { ...patch, last_email_kind: 'poll', ...(patch.reply_cursor ? {} : { replies_synced_at: new Date().toISOString() }) })
   return saved
 }
 
-async function refreshQueuePage(admin: Admin, campaign: Campaign, job: Queue, request: InstantlyReadOptions & { deadline: number; beforeAttempt: () => Promise<void> }) {
+async function refreshQueuePage(admin: Admin, campaign: Campaign, job: Queue, scope: EmailScope, request: InstantlyReadOptions & { deadline: number; beforeAttempt: () => Promise<void> }) {
   const page = await listEmails({ ...request, campaignId: campaign.provider_campaign_id,
     startingAfter: job.cursor ?? undefined, lead: job.lead_email || undefined, threadId: job.provider_thread_id || undefined })
   assertPage(page, job.cursor)
-  const saved = await saveMessages(admin, campaign, page.items)
+  const saved = await saveMessages(admin, campaign, page.items, scope)
   const next = page.items.length > 0 ? page.next_starting_after ?? null : null
   // A webhook delivered during this request has bumped requested_at. Keep
   // its fresh job intact so an in-flight fetch cannot swallow a new reply.
@@ -241,6 +250,7 @@ export async function syncOutreach(ctx: CronContext) {
     result.failed += linkedin.failed
     result.deferred += linkedin.deferred
     const candidates = await admin.from('outreach_sync_state').select('*, outreach_campaigns!inner(*)')
+      .eq('outreach_campaigns.channel', 'email')
       .or(`retry_after.is.null,retry_after.lte.${new Date().toISOString()}`)
       .order('last_served_at', { ascending: true, nullsFirst: true }).order('campaign_id').limit(50)
     check(candidates.error)
@@ -260,7 +270,7 @@ export async function syncOutreach(ctx: CronContext) {
         const deadline = ctx.deadline - 5_000
         const readOptions: InstantlyReadOptions & { deadline: number } = { deadline }
         // An explicit tenant assignment and dedicated credential are required;
-        const binding = await admin.from('outreach_reply_workspaces').select('remote_workspace_id,credential_ref,sync_enabled')
+        const binding = await admin.from('outreach_reply_workspaces').select('id,remote_workspace_id,credential_ref,sync_enabled')
           .eq('client_id', campaign.client_id).eq('channel', 'email').maybeSingle()
         check(binding.error)
         if (!binding.data) { result.failed += 1; continue }
@@ -273,6 +283,18 @@ export async function syncOutreach(ctx: CronContext) {
           if (!key || !await verifyScopedInstantlyWorkspace(binding.data.remote_workspace_id, { apiKey: key, timeoutMs: Math.min(5000, ctx.timeLeft()) })) throw new Error('Workspace history is unavailable')
           readOptions.apiKey = key
         }
+        const senders = await admin.from('outreach_reply_senders').select('remote_sender_id,sender_address')
+          .eq('client_id', campaign.client_id).eq('workspace_id', binding.data.id).eq('channel', 'email').limit(501)
+        check(senders.error)
+        // Read authorization is independent of the enabled flag for sending.
+        if (!senders.data?.length || senders.data.length > 500
+          || senders.data.some(sender => sender.remote_sender_id !== sender.sender_address)) {
+          throw new Error('Campaign history sender scope is unavailable')
+        }
+        const remote = await getCampaign(campaign.provider_campaign_id, readOptions)
+        const scope: EmailScope = { workspaceId: binding.data.remote_workspace_id,
+          senders: scopedCampaignSenders(remote, campaign.provider_campaign_id, binding.data.remote_workspace_id,
+            senders.data.map(sender => sender.remote_sender_id)) }
         const hasTime = () => { if (ctx.timeLeft() < MIN_START_MS) throw new Deferred() }
         const beforeAttempt = async () => {
           hasTime()
@@ -290,7 +312,7 @@ export async function syncOutreach(ctx: CronContext) {
           const pollDue = !!state.reply_scan_started_at || syncDue(state.replies_synced_at, 2 * MINUTE, Date.now())
           if (queued.data && (!pollDue || state.last_email_kind === 'poll')) {
             try {
-              result.messages += await refreshQueuePage(admin, campaign, queued.data, { ...readOptions, beforeAttempt })
+              result.messages += await refreshQueuePage(admin, campaign, queued.data, scope, { ...readOptions, beforeAttempt })
               await updateState(admin, state, { last_email_kind: 'queue' })
             } catch (error) {
               if (!(error instanceof Deferred)) {
@@ -302,14 +324,14 @@ export async function syncOutreach(ctx: CronContext) {
               throw error
             }
           } else if (pollDue) {
-            result.messages += await refreshReplyPage(admin, campaign, state, { ...readOptions, beforeAttempt })
+            result.messages += await refreshReplyPage(admin, campaign, state, scope, { ...readOptions, beforeAttempt })
           }
         }
         if (syncDue(state.meta_synced_at, 15 * MINUTE, Date.now())) {
-          hasTime(); await refreshMetadata(admin, campaign, state, readOptions)
+          hasTime(); await refreshMetadata(admin, campaign, state, remote, readOptions)
         }
         if (syncDue(state.daily_synced_at, 30 * MINUTE, Date.now())) {
-          hasTime(); await refreshAnalytics(admin, campaign, state, readOptions)
+          hasTime(); await refreshAnalytics(admin, campaign, state, remote, readOptions)
         }
         if (state.lead_cursor || syncDue(state.leads_synced_at, 30 * MINUTE, Date.now())) {
           hasTime(); await refreshLeadPage(admin, campaign, state, readOptions)
