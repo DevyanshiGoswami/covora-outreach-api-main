@@ -203,18 +203,21 @@ export async function getCampaign(
  */
 export function scopedCampaignSenders(campaign: InstantlyCampaign, expectedCampaignId: string,
   expectedWorkspaceId: string, approvedSenders: readonly string[]): ReadonlySet<string> {
-  const config = z.object({ id: z.uuid(), organization: z.uuid().optional(),
-    email_list: z.array(scopedEmail).min(1).max(500),
+  const config = z.object({ id: z.uuid(), organization: z.uuid().optional(), status: z.number(),
+    email_list: z.array(scopedEmail).max(500),
     // Unresolved tags can expand the campaign beyond its explicit email list.
     // An omitted/empty tag list is supported; no account-tag discovery occurs.
     email_tag_list: z.array(z.string()).max(0).nullish(),
   }).safeParse(campaign)
-  const approved = z.array(scopedEmail).min(1).max(500).safeParse(approvedSenders)
+  const approved = z.array(scopedEmail).max(500).safeParse(approvedSenders)
   if (!config.success || !approved.success || config.data.id !== expectedCampaignId
     || (config.data.organization !== undefined && config.data.organization !== expectedWorkspaceId)
+    || (config.data.email_list.length === 0 && config.data.status !== 0)
     || config.data.email_list.some(email => !approved.data.includes(email))) {
     throw new InstantlyError('Assigned campaign sender scope is unavailable', 403)
   }
+  // A senderless draft may expose its assigned campaign data, but an empty
+  // scope never authorizes message reads. The worker leaves reply cursors alone.
   return new Set(config.data.email_list)
 }
 
@@ -305,7 +308,10 @@ export async function getCampaignAnalytics(
     ...options,
     searchParams: { id: campaignId },
   })
-  return Array.isArray(data) && data.length > 0 ? data[0] : null
+  if (!Array.isArray(data) || data.length > 0 && (!data[0] || typeof data[0] !== 'object' || Array.isArray(data[0]))) {
+    throw new InstantlyError('Sending-engine analytics response is invalid', 502)
+  }
+  return data.length > 0 ? data[0] : null
 }
 
 export interface InstantlyDailyCampaignAnalytics {

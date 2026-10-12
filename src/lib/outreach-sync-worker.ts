@@ -22,7 +22,7 @@ type Admin = ReturnType<typeof createSupabaseAdminClient>
 type Campaign = Database['public']['Tables']['outreach_campaigns']['Row']
 type State = Database['public']['Tables']['outreach_sync_state']['Row']
 type Queue = Database['public']['Tables']['outreach_fetch_queue']['Row']
-type EmailScope = { workspaceId: string; senders: ReadonlySet<string> }
+type EmailScope = { workspaceId: string; approvedSenders: ReadonlySet<string> }
 const MINUTE = 60_000
 const DAY = 24 * 60 * MINUTE
 const MIN_START_MS = 7_000
@@ -61,7 +61,7 @@ async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, r
   if (remote.id !== campaign.provider_campaign_id || !remote.name || typeof remote.status !== 'number') {
     throw new Error('Sending engine campaign did not match its assignment')
   }
-  if (!totals || (totals.campaign_id && totals.campaign_id !== campaign.provider_campaign_id)) {
+  if ((!totals && remote.status !== 0) || (totals?.campaign_id && totals.campaign_id !== campaign.provider_campaign_id)) {
     throw new Error('Sending engine totals did not match their assignment')
   }
   const now = new Date().toISOString()
@@ -103,7 +103,10 @@ async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, r
   const patch = {
     name: neutralText(remote.name).slice(0, 500) || 'Campaign', status: campaignStatus(remote.status),
     schedule: normalizedSchedule(remote.campaign_schedule),
-    totals: { ...normalizedTotals(totals), positive_replies: await positiveReplies(admin, campaign.id) }, synced_at: now,
+    // A draft may have no analytics object. Keep any earlier measured
+    // totals instead of replacing unavailable measurements with zeroes.
+    totals: { ...(totals ? normalizedTotals(totals) : record(campaign.totals)),
+      analytics_available: totals !== null, positive_replies: await positiveReplies(admin, campaign.id) } as Campaign['totals'], synced_at: now,
     // No provider completion timestamp exists. Retention starts at our first
     // observed completion, conservatively later than the actual end.
     completed_at: remote.status === 3 ? campaign.completed_at ?? now : null,
@@ -176,7 +179,7 @@ async function saveMessages(admin: Admin, campaign: Campaign, items: InstantlyEm
   // in another client's campaign; a sender match never replaces campaign scope.
   const scoped = items.map(item => {
     const address = typeof item?.eaccount === 'string' ? item.eaccount.trim().toLowerCase() : ''
-    if (item?.campaign_id !== campaign.provider_campaign_id || !scope.senders.has(address)
+    if (item?.campaign_id !== campaign.provider_campaign_id || !scope.approvedSenders.has(address)
       || (item.organization_id !== undefined && item.organization_id !== scope.workspaceId)) {
       throw new Error('Campaign history scope is unavailable')
     }
@@ -287,14 +290,18 @@ export async function syncOutreach(ctx: CronContext) {
           .eq('client_id', campaign.client_id).eq('workspace_id', binding.data.id).eq('channel', 'email').limit(501)
         check(senders.error)
         // Read authorization is independent of the enabled flag for sending.
-        if (!senders.data?.length || senders.data.length > 500
+        if (!senders.data || senders.data.length > 500
           || senders.data.some(sender => sender.remote_sender_id !== sender.sender_address)) {
           throw new Error('Campaign history sender scope is unavailable')
         }
         const remote = await getCampaign(campaign.provider_campaign_id, readOptions)
-        const scope: EmailScope = { workspaceId: binding.data.remote_workspace_id,
-          senders: scopedCampaignSenders(remote, campaign.provider_campaign_id, binding.data.remote_workspace_id,
-            senders.data.map(sender => sender.remote_sender_id)) }
+        const approvedSenders = senders.data.map(sender => sender.remote_sender_id)
+        // Current configuration must still contain only approved tenant senders.
+        // Historical messages can belong to an approved sender removed from that
+        // configuration; message campaign and returned workspace IDs stay checked.
+        const currentCampaignSenders = scopedCampaignSenders(remote, campaign.provider_campaign_id,
+          binding.data.remote_workspace_id, approvedSenders)
+        const scope: EmailScope = { workspaceId: binding.data.remote_workspace_id, approvedSenders: new Set(approvedSenders) }
         const hasTime = () => { if (ctx.timeLeft() < MIN_START_MS) throw new Deferred() }
         const beforeAttempt = async () => {
           hasTime()
@@ -305,7 +312,7 @@ export async function syncOutreach(ctx: CronContext) {
         }
         // Reply work comes first, preventing slow metadata from consuming the
         // whole budget before the inbox can make progress.
-        if (!campaign.messages_purged_at && !emailBudgetExhausted) {
+        if (currentCampaignSenders.size > 0 && !campaign.messages_purged_at && !emailBudgetExhausted) {
           const queued = await admin.from('outreach_fetch_queue').select('*').eq('campaign_id', campaign.id)
             .is('completed_at', null).lte('available_at', new Date().toISOString()).order('available_at').limit(1).maybeSingle()
           check(queued.error)

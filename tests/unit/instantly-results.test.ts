@@ -54,6 +54,13 @@ test('analytics reads use campaign_id for daily/steps, id for totals, and preser
   assert.equal(new URL(stub.calls[2].url).searchParams.get('include_opportunities_count'), 'true')
 })
 
+for (const [name, body] of Object.entries({ object: {}, null: null, null_item: [null], array_item: [[]], number_item: [7] })) {
+  test(`malformed ${name} analytics response is not interpreted as unavailable draft analytics`, async t => {
+    setup(t, { '/campaigns/analytics': { body } })
+    await assert.rejects(getCampaignAnalytics('campaign-a', scope), /analytics response is invalid/)
+  })
+}
+
 test('lead list is read-only POST with a durable page cursor and preserves non-email leads', async t => {
   const stub = setup(t, { '/leads/list': call => ({ body: call.n === 1
     ? { items: [{ email: null }], next_starting_after: 'next' }
