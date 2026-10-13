@@ -18,6 +18,7 @@ function harness(t: TestContext, options: {
   cursor?: string; nextCursor?: string; replyWatermark?: string; queue?: boolean; dailyDue?: boolean;
   metadataDue?: boolean; leadsDue?: boolean; noBoundSenders?: boolean;
   analytics?: Record<string, unknown> | null; previousTotals?: Record<string, number | boolean>;
+  analyticsResponse?: unknown;
   positiveCount?: number; emptyDaily?: boolean; previousStatus?: string; completedAt?: string | null;
 } = {}) {
   const env = { NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:60321', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'unit-anon',
@@ -57,7 +58,8 @@ function harness(t: TestContext, options: {
     [`/campaigns/${remoteId}`]: { body: { id: remoteId, name: 'Reviewed campaign', status: 2,
       timestamp_created: '2026-10-01T00:00:00Z', organization: workspaceId, email_list: [sender], ...options.remote } },
     '/campaigns/analytics/daily': { body: options.emptyDaily ? [] : [{ date: '2026-10-01', sent: 4, unique_replies: 1 }] },
-    '/campaigns/analytics': { body: options.analytics === null ? [] : [{ campaign_id: remoteId, leads_count: 1, emails_sent_count: 0, ...options.analytics }] },
+    '/campaigns/analytics': { body: Object.hasOwn(options, 'analyticsResponse') ? options.analyticsResponse
+      : options.analytics === null ? [] : [{ campaign_id: remoteId, leads_count: 1, emails_sent_count: 0, ...options.analytics }] },
     '/leads/list': { body: { items: [{ id: 'draft-lead', campaign: remoteId, email: 'draft-lead@example.test' }] } },
     '/emails': { body: { items: options.items ?? [message], ...(options.nextCursor ? { next_starting_after: options.nextCursor } : {}) } },
   })
@@ -120,37 +122,69 @@ for (const noBoundSenders of [true, false]) test(`an assigned senderless draft w
   assert.equal(checkpoints.some(patch => 'reply_cursor' in patch || 'reply_watermark' in patch || 'replies_synced_at' in patch), false)
 })
 
-test('drafts with unavailable analytics keep earlier totals while metadata and real leads refresh', async t => {
+for (const status of [0, 1]) test(`${status === 0 ? 'draft' : 'active'} campaigns with unavailable analytics keep earlier totals while metadata and real leads refresh`, async t => {
   const previousTotals = { leads: 118, sent: 26, unique_replies: 3, opportunities: 4, positive_replies: 9, analytics_available: true }
-  const h = harness(t, { remote: { status: 0 }, items: [], analytics: null, previousTotals,
+  const h = harness(t, { remote: { status }, items: [], analytics: null, previousTotals,
     positiveCount: 2, metadataDue: true, leadsDue: true, dailyDue: true, emptyDaily: true })
   const result = await h.run()
   assert.equal(result.failed, 0)
   assert.equal(result.campaigns, 1)
   const updates = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!))
-  assert.equal(updates.find(patch => patch.name).status, 'draft')
+  assert.equal(updates.find(patch => patch.name).status, status === 0 ? 'draft' : 'active')
   for (const patch of updates.filter(patch => 'totals' in patch)) assert.deepEqual(patch.totals, { ...previousTotals, positive_replies: 2, analytics_available: false })
   assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 1)
   assert.equal(writes(h.calls, 'outreach_campaign_daily').length, 0)
 })
 
-test('drafts without earlier analytics do not manufacture zero-valued campaign measurements', async t => {
-  const h = harness(t, { remote: { status: 0, email_list: [] }, analytics: null, metadataDue: true })
+for (const status of [0, 1]) test(`${status === 0 ? 'draft' : 'active'} campaigns without earlier analytics do not manufacture zero-valued campaign measurements`, async t => {
+  const h = harness(t, { remote: { status, email_list: status === 0 ? [] : [sender] }, analytics: null, metadataDue: true })
   assert.equal((await h.run()).failed, 0)
   const metadata = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!)).find(patch => patch.name)
   assert.deepEqual(metadata.totals, { analytics_available: false, positive_replies: 0 })
 })
 
+test('newly active campaigns with pending totals still checkpoint replies, daily results and lead refreshes', async t => {
+  const h = harness(t, { previousStatus: 'draft', remote: { status: 1 }, analytics: null,
+    metadataDue: true, dailyDue: true, leadsDue: true })
+  const result = await h.run()
+  assert.equal(result.failed, 0)
+  assert.equal(result.campaigns, 1)
+  assert.equal(result.messages, 1)
+  const metadata = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!)).find(patch => patch.name)
+  assert.equal(metadata.status, 'active')
+  assert.deepEqual(metadata.totals, { analytics_available: false, positive_replies: 0 })
+  assert.equal(writes(h.calls, 'outreach_messages').length, 1)
+  assert.equal(JSON.parse(writes(h.calls, 'outreach_campaign_daily')[0].body!)[0].sent, 4)
+  assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 1)
+  const checkpoints = writes(h.calls, 'outreach_sync_state').map(call => JSON.parse(call.body!))
+  for (const field of ['replies_synced_at', 'meta_synced_at', 'daily_synced_at', 'leads_synced_at']) {
+    assert.ok(checkpoints.some(patch => patch[field]))
+  }
+  assert.deepEqual(checkpoints.at(-1), { retry_after: null, attempt_count: 0, last_error: null })
+})
+
 for (const [name, input] of Object.entries({
-  missing_non_draft: { remote: { status: 1 }, analytics: null },
+  missing_paused: { remote: { status: 2 }, analytics: null },
+  missing_completed: { remote: { status: 3 }, analytics: null },
+  missing_following_up: { remote: { status: 4 }, analytics: null },
   foreign_draft: { remote: { status: 0 }, analytics: { campaign_id: workspaceId } },
+  foreign_active: { remote: { status: 1 }, analytics: { campaign_id: workspaceId } },
 })) test(`metadata still rejects ${name} analytics`, async t => {
   const h = harness(t, { ...input, items: [], metadataDue: true, dailyDue: true, leadsDue: true })
   assert.equal((await h.run()).failed, 1)
   const updates = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!))
-  assert.deepEqual(updates, [{ status: input.remote.status === 1 ? 'active' : 'draft', completed_at: null }])
+  assert.equal(updates.some(patch => 'totals' in patch || 'synced_at' in patch || 'name' in patch), false)
   assert.equal(writes(h.calls, 'outreach_campaign_daily').length, 0)
   assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 0)
+})
+
+for (const analyticsResponse of [{}, [null], [[]]]) test('active campaigns still reject malformed analytics instead of treating them as pending', async t => {
+  const h = harness(t, { remote: { status: 1 }, analyticsResponse, metadataDue: true, dailyDue: true, leadsDue: true })
+  assert.equal((await h.run()).failed, 1)
+  assert.equal(writes(h.calls, 'outreach_campaigns').some(call => 'totals' in JSON.parse(call.body!)), false)
+  assert.equal(writes(h.calls, 'outreach_campaign_daily').length, 0)
+  assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 0)
+  assert.equal(writes(h.calls, 'outreach_sync_state').some(call => 'meta_synced_at' in JSON.parse(call.body!)), false)
 })
 
 for (const [name, remote] of Object.entries({

@@ -72,7 +72,7 @@ async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, r
   if (remote.id !== campaign.provider_campaign_id || !remote.name || typeof remote.status !== 'number') {
     throw new Error('Sending engine campaign did not match its assignment')
   }
-  if ((!totals && remote.status !== 0) || (totals?.campaign_id && totals.campaign_id !== campaign.provider_campaign_id)) {
+  if ((!totals && remote.status !== 0 && remote.status !== 1) || (totals?.campaign_id && totals.campaign_id !== campaign.provider_campaign_id)) {
     throw new Error('Sending engine totals did not match their assignment')
   }
   const now = new Date().toISOString()
@@ -114,8 +114,8 @@ async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, r
   const patch = {
     name: neutralText(remote.name).slice(0, 500) || 'Campaign', status: campaignStatus(remote.status),
     schedule: normalizedSchedule(remote.campaign_schedule),
-    // A draft may have no analytics object. Keep any earlier measured
-    // totals instead of replacing unavailable measurements with zeroes.
+    // Drafts and newly active campaigns may have no analytics object yet.
+    // Keep earlier measurements while other synchronization continues.
     totals: { ...(totals ? normalizedTotals(totals) : record(campaign.totals)),
       analytics_available: totals !== null, positive_replies: await positiveReplies(admin, campaign.id) } as Campaign['totals'], synced_at: now,
     // No provider completion timestamp exists. Retention starts at our first
