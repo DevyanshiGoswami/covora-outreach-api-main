@@ -18,7 +18,7 @@ function harness(t: TestContext, options: {
   cursor?: string; nextCursor?: string; replyWatermark?: string; queue?: boolean; dailyDue?: boolean;
   metadataDue?: boolean; leadsDue?: boolean; noBoundSenders?: boolean;
   analytics?: Record<string, unknown> | null; previousTotals?: Record<string, number | boolean>;
-  positiveCount?: number; emptyDaily?: boolean;
+  positiveCount?: number; emptyDaily?: boolean; previousStatus?: string; completedAt?: string | null;
 } = {}) {
   const env = { NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:60321', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'unit-anon',
     SUPABASE_SERVICE_ROLE_KEY: 'unit-service', OUTREACH_SUPABASE_PROJECT_REF: 'local-outreach',
@@ -31,7 +31,9 @@ function harness(t: TestContext, options: {
     meta_synced_at: options.metadataDue ? null : now, daily_synced_at: options.dailyDue ? null : now,
     leads_synced_at: options.leadsDue ? null : now, replies_synced_at: null,
     lead_cursor: null, last_email_kind: options.queue ? 'poll' : null, attempt_count: 0,
-    outreach_campaigns: { id: campaignId, client_id: clientId, provider_campaign_id: remoteId, channel: 'email', messages_purged_at: null, totals: options.previousTotals ?? {} } }
+    outreach_campaigns: { id: campaignId, client_id: clientId, provider_campaign_id: remoteId, channel: 'email',
+      status: options.previousStatus ?? 'paused', completed_at: options.completedAt ?? null,
+      synced_at: now, messages_purged_at: null, totals: options.previousTotals ?? {} } }
   const db = (call: FetchCall) => {
     const url = new URL(call.url), table = url.pathname.split('/').at(-1)
     if (url.pathname.includes('/rpc/')) return { body: table === 'purge_outreach_messages' ? false : table === 'reserve_outreach_email_request' ? options.permit !== false : true }
@@ -127,7 +129,7 @@ test('drafts with unavailable analytics keep earlier totals while metadata and r
   assert.equal(result.campaigns, 1)
   const updates = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!))
   assert.equal(updates.find(patch => patch.name).status, 'draft')
-  for (const patch of updates) assert.deepEqual(patch.totals, { ...previousTotals, positive_replies: 2, analytics_available: false })
+  for (const patch of updates.filter(patch => 'totals' in patch)) assert.deepEqual(patch.totals, { ...previousTotals, positive_replies: 2, analytics_available: false })
   assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 1)
   assert.equal(writes(h.calls, 'outreach_campaign_daily').length, 0)
 })
@@ -145,7 +147,8 @@ for (const [name, input] of Object.entries({
 })) test(`metadata still rejects ${name} analytics`, async t => {
   const h = harness(t, { ...input, items: [], metadataDue: true, dailyDue: true, leadsDue: true })
   assert.equal((await h.run()).failed, 1)
-  assert.equal(writes(h.calls, 'outreach_campaigns').length, 0)
+  const updates = writes(h.calls, 'outreach_campaigns').map(call => JSON.parse(call.body!))
+  assert.deepEqual(updates, [{ status: input.remote.status === 1 ? 'active' : 'draft', completed_at: null }])
   assert.equal(writes(h.calls, 'outreach_campaign_daily').length, 0)
   assert.equal(writes(h.calls, 'outreach_leads').filter(call => call.method === 'POST').length, 0)
 })
@@ -160,11 +163,55 @@ for (const [name, remote] of Object.entries({
   draft_wrong_workspace: { status: 0, email_list: [], organization: '55555555-5555-4555-8555-555555555555' },
   wrong_campaign_same_sender: { id: 'other-client-campaign' },
   wrong_workspace: { organization: '55555555-5555-4555-8555-555555555555' },
+  malformed_status: { status: '2' },
 })) test(`campaign scope rejects ${name} before any history read or mirror write`, async t => {
-  const h = harness(t, { remote }), result = await h.run()
+  const h = harness(t, { remote, previousStatus: 'active' }), result = await h.run()
   assert.equal(result.failed, 1)
   assert.equal(providerCalls(h.calls).some(call => call.url.includes('/emails')), false)
   assert.equal(writes(h.calls, 'outreach_messages').length, 0)
+  assert.equal(writes(h.calls, 'outreach_campaigns').length, 0)
+})
+
+for (const outcome of ['budget deferred', 'history rejected'] as const) test(`scoped status changes persist before ${outcome} without claiming fresher metrics`, async t => {
+  const h = harness(t, { previousStatus: 'active', remote: { status: 2 },
+    ...(outcome === 'budget deferred' ? { permit: false } : { items: [{ ...message, campaign_id: 'foreign-campaign' }] }) })
+  const result = await h.run()
+  assert.equal(outcome === 'budget deferred' ? result.deferred : result.failed, 1)
+  const updates = writes(h.calls, 'outreach_campaigns')
+  assert.equal(updates.length, 1)
+  assert.deepEqual(JSON.parse(updates[0].body!), { status: 'paused', completed_at: null })
+  const query = new URL(updates[0].url).searchParams
+  assert.equal(query.get('id'), `eq.${campaignId}`)
+  assert.equal(query.get('client_id'), `eq.${clientId}`)
+  assert.ok(updates[0].n < h.calls.find(call => call.url.includes('/reserve_outreach_email_request'))!.n)
+  assert.equal(providerCalls(h.calls).some(call => call.url.includes('/analytics')), false)
+  assert.equal(writes(h.calls, 'outreach_sync_state').some(call => 'meta_synced_at' in JSON.parse(call.body!)), false)
+  assert.equal(writes(h.calls, 'outreach_messages').length, 0)
+})
+
+test('unchanged scoped campaign status avoids a write outside metadata cadence', async t => {
+  const h = harness(t, { permit: false })
+  await h.run()
+  assert.equal(writes(h.calls, 'outreach_campaigns').length, 0)
+})
+
+for (const [previousStatus, completedAt, status] of [
+  ['active', null, 3], ['completed', '2026-10-01T00:00:00Z', 1],
+] as const) test(`observed ${previousStatus} transition updates retention state even when history is deferred`, async t => {
+  const before = Date.now()
+  const h = harness(t, { previousStatus, completedAt, remote: { status }, permit: false })
+  await h.run()
+  const patch = JSON.parse(writes(h.calls, 'outreach_campaigns')[0].body!)
+  if (status === 3) {
+    assert.equal(patch.status, 'completed')
+    assert.ok(Date.parse(patch.completed_at) >= before && Date.parse(patch.completed_at) <= Date.now())
+  } else assert.deepEqual(patch, { status: 'active', completed_at: null })
+})
+
+test('an existing completion observation retains its original retention timestamp', async t => {
+  const h = harness(t, { previousStatus: 'completed', completedAt: '2026-10-01T00:00:00Z', remote: { status: 3 }, permit: false })
+  await h.run()
+  assert.equal(writes(h.calls, 'outreach_campaigns').length, 0)
 })
 
 for (const queue of [false, true]) test(`${queue ? 'queued context' : 'campaign polling'} retains historical messages from a tenant-approved sender removed from current campaign configuration`, async t => {

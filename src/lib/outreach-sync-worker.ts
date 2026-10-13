@@ -55,6 +55,17 @@ async function updateState(admin: Admin, state: State, patch: Database['public']
   Object.assign(state, patch)
 }
 
+/** Save an already scoped observation before history can defer the campaign.
+ * Status freshness does not imply that its metrics or schedule were refreshed. */
+async function refreshStatus(admin: Admin, campaign: Campaign, remote: InstantlyCampaign) {
+  const status = campaignStatus(remote.status)
+  const completed_at = remote.status === 3 ? campaign.completed_at ?? new Date().toISOString() : null
+  if (campaign.status === status && campaign.completed_at === completed_at) return
+  const patch = { status, completed_at }
+  check((await admin.from('outreach_campaigns').update(patch).eq('id', campaign.id).eq('client_id', campaign.client_id)).error)
+  Object.assign(campaign, patch)
+}
+
 async function refreshMetadata(admin: Admin, campaign: Campaign, state: State, remote: InstantlyCampaign, options: InstantlyReadOptions & { deadline: number }) {
   const { deadline } = options
   const totals = await getCampaignAnalytics(campaign.provider_campaign_id, options)
@@ -301,6 +312,7 @@ export async function syncOutreach(ctx: CronContext) {
         // configuration; message campaign and returned workspace IDs stay checked.
         const currentCampaignSenders = scopedCampaignSenders(remote, campaign.provider_campaign_id,
           binding.data.remote_workspace_id, approvedSenders)
+        await refreshStatus(admin, campaign, remote)
         const scope: EmailScope = { workspaceId: binding.data.remote_workspace_id, approvedSenders: new Set(approvedSenders) }
         const hasTime = () => { if (ctx.timeLeft() < MIN_START_MS) throw new Deferred() }
         const beforeAttempt = async () => {
@@ -310,7 +322,7 @@ export async function syncOutreach(ctx: CronContext) {
           if (!permit.data) { emailBudgetExhausted = true; throw new Deferred() }
           result.email_attempts += 1
         }
-        // Reply work comes first, preventing slow metadata from consuming the
+        // Reply work precedes full metadata, preventing slow analytics from consuming the
         // whole budget before the inbox can make progress.
         if (currentCampaignSenders.size > 0 && !campaign.messages_purged_at && !emailBudgetExhausted) {
           const queued = await admin.from('outreach_fetch_queue').select('*').eq('campaign_id', campaign.id)
