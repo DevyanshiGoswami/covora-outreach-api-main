@@ -12,10 +12,10 @@ const querySchema = z.strictObject({
   email: z.enum(['all', 'available', 'verified']).default('all'),
   linkedin: z.enum(['all', 'available', 'verified']).default('all'),
   status: z.enum(['all', 'not_contacted', 'contacted', 'replied', 'completed']).default('all'),
-  sort: z.enum(['company', 'name', 'role']).default('company'),
+  sort: z.enum(['priority', 'company', 'name', 'role']).default('priority'),
   page: z.string().regex(/^[1-9][0-9]{0,6}$/).transform(Number).pipe(z.number().int().max(1000000)).default(1),
 })
-const leadSchema = z.object({
+export const leadSchema = z.object({
   id: uuid, clientId: uuid, campaignId: uuid.nullable(), campaignName: z.string().max(500).nullable(),
   listId: uuid.nullable(), listName: z.string().max(500).nullable(),
   firstName: z.string().max(500), lastName: z.string().max(500), fullName: z.string().max(500), company: z.string().max(500),
@@ -25,6 +25,13 @@ const leadSchema = z.object({
   linkedinVerified: z.boolean().nullable(),
   status: z.enum(['not_contacted', 'contacted', 'in_sequence', 'replied', 'completed', 'bounced', 'unsubscribed', 'skipped', 'paused', 'unknown']),
   interest: z.string().max(500).nullable(), lastActivityAt: z.iso.datetime({ offset: true }).nullable(),
+  priorityRank: z.number().int().min(1).max(1000000).nullable().optional(),
+  fitReason: z.string().max(2000).nullable().optional(),
+  emailValidation: z.enum(['valid', 'risky', 'unknown', 'invalid']).nullable().optional(),
+  contactPreference: z.enum(['email_and_linkedin', 'linkedin_first']).nullable().optional(),
+  researchGaps: z.string().max(4000).nullable().optional(),
+  researchedAt: z.iso.datetime({ offset: true }).nullable().optional(),
+  sourceUrls: z.array(z.string().max(1500).regex(/^https:\/\/([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}(\/[^\s?#]*)?$/)).max(20).optional(),
 })
 const pageSchema = z.object({
   clientId: uuid, leads: z.array(leadSchema).max(36), total: nonnegative,

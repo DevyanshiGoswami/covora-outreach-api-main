@@ -40,7 +40,7 @@ test('lead directory verifies bearer and binds the RPC to the same identity; pri
     assert.equal(call.headers.get('apikey'), 'public-key')
     assert.equal(call.cache, 'no-store')
   }
-  assert.deepEqual(JSON.parse(calls[1].body), { p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'company', p_page: 1 })
+  assert.deepEqual(JSON.parse(calls[1].body), { p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'priority', p_page: 1 })
 })
 
 test('auth denial and invalid filter requests never read leads; duplicate/unknown keys and malformed pages fail closed', async () => {

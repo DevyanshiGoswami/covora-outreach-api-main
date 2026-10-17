@@ -278,13 +278,13 @@ isOneToOne: false
                   ]
                 },"outreach_imported_leads": {
                   Row: {
-                    "client_id": string,"company": string,"email": string | null,"email_verification": string,"email_verification_evidence": string | null,"first_name": string,"id": string,"imported_at": string,"job_title": string | null,"last_name": string,"linkedin_url": string | null,"linkedin_verification_evidence": string | null,"linkedin_verified": boolean | null,"list_id": string,"location": string | null,"role_category": string | null,"source_row_id": string,"status": string
+                    "client_id": string,"company": string,"email": string | null,"email_verification": string,"email_verification_evidence": string | null,"first_name": string,"fit_reason": string | null,"id": string,"imported_at": string,"job_title": string | null,"last_name": string,"linkedin_url": string | null,"linkedin_verification_evidence": string | null,"linkedin_verified": boolean | null,"list_id": string,"location": string | null,"priority_rank": number | null,"review_evidence": NonNullable<Json>,"review_reason": string | null,"review_state": string,"reviewed_at": string | null,"role_category": string | null,"source_row_id": string,"status": string
                   }
                   Insert: {
-                    "client_id": string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"id": string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id": string,"location"?: string | null,"role_category"?: string | null,"source_row_id": string,"status"?: string
+                    "client_id": string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"fit_reason"?: string | null,"id": string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id": string,"location"?: string | null,"priority_rank"?: number | null,"review_evidence"?: NonNullable<Json>,"review_reason"?: string | null,"review_state"?: string,"reviewed_at"?: string | null,"role_category"?: string | null,"source_row_id": string,"status"?: string
                   }
                   Update: {
-                    "client_id"?: string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"id"?: string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id"?: string,"location"?: string | null,"role_category"?: string | null,"source_row_id"?: string,"status"?: string
+                    "client_id"?: string,"company"?: string,"email"?: string | null,"email_verification"?: string,"email_verification_evidence"?: string | null,"first_name"?: string,"fit_reason"?: string | null,"id"?: string,"imported_at"?: string,"job_title"?: string | null,"last_name"?: string,"linkedin_url"?: string | null,"linkedin_verification_evidence"?: string | null,"linkedin_verified"?: boolean | null,"list_id"?: string,"location"?: string | null,"priority_rank"?: number | null,"review_evidence"?: NonNullable<Json>,"review_reason"?: string | null,"review_state"?: string,"reviewed_at"?: string | null,"role_category"?: string | null,"source_row_id"?: string,"status"?: string
                   }
                   Relationships: [
                     {
@@ -761,6 +761,9 @@ isOneToOne: false
                            },
 "list_outreach_conversations":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_channel"?: string,"p_client_id": string,"p_limit"?: number }; Returns: Json
+                           },
+"list_outreach_escrow_leads":
+{ Args: { "p_client_id": string,"p_page"?: number,"p_q"?: string }; Returns: Json
                            },
 "list_outreach_leads":
 { Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
