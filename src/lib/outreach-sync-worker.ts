@@ -1,3 +1,4 @@
+import { resolveIntegrationCredential } from './integration-credentials'
 import 'server-only'
 import { runtimeConfiguration } from './runtime-config'
 import { randomUUID } from 'node:crypto'
@@ -293,7 +294,7 @@ export async function syncOutreach(ctx: CronContext) {
           const feature = await admin.from('client_features').select('enabled').eq('client_id', campaign.client_id).eq('feature', 'outreach_app').maybeSingle()
           check(feature.error)
           if (!feature.data?.enabled) continue
-          const key = /^OUTREACH_INSTANTLY_[A-Z0-9_]{1,100}$/.test(binding.data.credential_ref) ? process.env[binding.data.credential_ref]?.trim() : null
+          const key = /^OUTREACH_INSTANTLY_[A-Z0-9_]{1,100}$/.test(binding.data.credential_ref) ? await resolveIntegrationCredential(binding.data.credential_ref, process.env, admin) : null
           if (!key || !await verifyScopedInstantlyWorkspace(binding.data.remote_workspace_id, { apiKey: key, timeoutMs: Math.min(5000, ctx.timeLeft()) })) throw new Error('Workspace history is unavailable')
           readOptions.apiKey = key
         }

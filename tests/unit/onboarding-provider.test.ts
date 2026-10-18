@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { connectAccount, checkConnectionWorkspace, verifyConnectionWorkspace, googleAuthorizationUrl, type ConnectionContext } from '../../src/lib/onboarding-provider'
+
+const workspace = '00000000-0000-4000-8000-000000000001'
+const sessionId = '00000000-0000-4000-8000-000000000002'
+const context: ConnectionContext = { channel: 'email', email: 'person@example.test', workspace, credential: 'OUTREACH_INSTANTLY_TEST', remoteSession: sessionId, remoteAccount: null }
+function transport(responses: (unknown | Response)[], check?: (url: string, init?: RequestInit) => void): typeof fetch {
+  return async (url, init) => { check?.(String(url), init); assert.ok(responses.length, 'Unexpected provider request'); const response = responses.shift(); return response instanceof Response ? response : Response.json(response) }
+}
+test('Google initialization only accepts a Google authorization URL and verifies workspace first', async () => {
+  const paths: string[] = []
+  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: workspace }, { session_id: sessionId, auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?state=test', expires_at: new Date(Date.now()+600000).toISOString() }], (url, init) => {
+    paths.push(new URL(url).pathname); assert.equal(init?.redirect, 'error'); assert.ok(init?.signal); assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer synthetic')
+  }) })
+  assert.equal(result.state, 'pending'); assert.equal(result.remoteSession, sessionId)
+  assert.deepEqual(paths, ['/api/v2/workspaces/current', '/api/v2/oauth/google/init'])
+  for (const url of ['https://accounts.google.com.evil.test/o/oauth2/auth?state=x', 'https://evil.test', 'javascript:alert(1)', 'https://accounts.google.com@evil.test', 'https://accounts.google.com/other?state=x']) assert.throws(() => googleAuthorizationUrl(url))
+})
+test('wrong workspace prevents OAuth initialization', async () => {
+  assert.deepEqual(await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { state: 'failed' })
+})
+test('Google success is bound to the expected mailbox and account workspace', async () => {
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'success', email: context.email, account_id: context.email }, { email: context.email, organization: workspace, status: 1, setup_pending: false }]) }), { state: 'connected', remoteAccount: context.email })
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'success', email: 'other@example.test', account_id: 'other@example.test' }]) }), { state: 'failed' })
+})
+test('timeouts and unrecognized consumed OAuth results remain uncertain with no automatic retry', async () => {
+  let calls = 0
+  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: async () => { calls++; throw new Error('Do not expose credential diagnostics') } })
+  assert.deepEqual(result, { state: 'uncertain' }); assert.equal(calls, 1)
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'unexpected', password: 'sensitive' }]) }), { state: 'uncertain' })
+})
+test('HeyReach Connect uses scoped transport and never requests personal inbox scraping', async () => {
+  const result = await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: transport([{ linkedInAccountId: 123 }], (url, init) => {
+    assert.equal(url, 'https://api.heyreach.io/api/public/li_account/Connect')
+    assert.equal(new Headers(init?.headers).get('X-API-KEY'), 'synthetic')
+    assert.deepEqual(JSON.parse(String(init?.body)), { username: context.email, password: 'fake-password', twoFactorAuthKey: '', proxyCountryCode: 'US', inboxScrapeMode: 'HeyReachOnly' })
+  }) }, { password: 'fake-password', country: 'US' })
+  assert.deepEqual(result, { state: 'pending', remoteAccount: '123' }); assert.ok(!JSON.stringify(result).includes('fake-password'))
+})
+test('HeyReach PIN and status are bound to the saved account; unknown intermediate states stay pending', async () => {
+  const scope = { ...context, channel: 'linkedin' as const, remoteAccount: '123' }
+  assert.deepEqual(await connectAccount(scope, 'pin', { key: 'synthetic', fetch: transport([new Response(null, { status: 204 })], (_url, init) => assert.deepEqual(JSON.parse(String(init?.body)), { accountId: 123, pin: '123456' })) }, { pin: '123456' }), { state: 'pending' })
+  assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'AwaitingVerification' }]) }), { state: 'pending' })
+  assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 456, status: 'Connected' }]) }), { state: 'failed' })
+  assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/person' } }]) }), { state: 'connected', remoteAccount: '123', address: 'https://www.linkedin.com/in/person' })
+})
+test('HeyReach credential check accepts both documented success statuses without requiring JSON', async () => {
+  for (const response of [new Response(null, { status: 204 }), new Response(null, { status: 200 }), new Response('API key valid', { status: 200 })]) {
+    assert.equal(await checkConnectionWorkspace('linkedin', 'workspace', { key: 'synthetic', fetch: transport([response]) }), true)
+  }
+})
+test('HeyReach credential check rejects errors and unexpected statuses without leaking diagnostics', async (t) => {
+  const warning = t.mock.method(console, 'warn', () => {})
+  for (const status of [202, 301, 401, 403, 429, 500]) {
+    assert.equal(await checkConnectionWorkspace('linkedin', 'workspace', { key: 'synthetic-private-key', fetch: transport([new Response('private provider body', { status })]) }), false)
+  }
+  assert.equal(await checkConnectionWorkspace('linkedin', 'workspace', { key: 'synthetic-private-key', fetch: async () => { throw new Error('private transport details') } }), false)
+  const logs = JSON.stringify(warning.mock.calls.map(call => call.arguments))
+  assert.ok(logs.includes('401'))
+  for (const secret of ['synthetic-private-key', 'private provider body', 'private transport details']) assert.ok(!logs.includes(secret))
+})
+test('verification classifies rejected keys, denied access, rate limits and service failures', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  for (const [status, code] of [[401, 'key_rejected'], [403, 'provider_access_denied'], [429, 'provider_rate_limited'], [503, 'provider_unavailable'], [202, 'key_verification_failed']] as const) {
+    assert.deepEqual(await verifyConnectionWorkspace('linkedin', 'workspace', { key: 'synthetic', fetch: transport([new Response('private error', { status })]) }), { ok: false, code })
+  }
+})
