@@ -3,7 +3,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { adminClient } from '../helpers/admin'
 import { createUser } from '../helpers/tenants'
-import { grantOutreachOwner } from '../helpers/outreach'
+import { grantOutreachOwner, grantAgencyControls } from '../helpers/outreach'
 import { loadTestEnv } from '../helpers/env'
 import { createAdminIntegrationHandlers } from '../../src/lib/admin-integrations-api'
 
@@ -44,6 +44,7 @@ test('accepted agency owner can configure connectors; revocation removes access 
     assert.equal((await handlers.POST(request({ action: 'remove', id: integrationId, version: 1 }))).status, 200)
     const membership = await admin.from('outreach_agency_memberships').select('version').eq('user_id', invitee.user.id).single()
     assert.ifError(membership.error)
+    await grantAgencyControls(inviter.user.id)
     assert.ifError((await inviter.session.rpc('revoke_outreach_owner', { p_user_id: invitee.user.id, p_expected_version: membership.data!.version })).error)
     assert.equal((await handlers.GET(request())).status, 403)
     assert.equal((await handlers.POST(request(save))).status, 403)

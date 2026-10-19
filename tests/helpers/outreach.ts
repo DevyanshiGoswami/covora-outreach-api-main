@@ -17,3 +17,10 @@ export async function grantOutreachOwner(userId: string) {
     user_id: userId, role: 'owner', state: 'active',
   })).error)
 }
+
+/** Separate, explicit fixture grant; an ordinary owner has neither permission. */
+export async function grantAgencyControls(userId: string) {
+  assert.ifError((await adminClient().from('outreach_agency_permissions').upsert({
+    user_id: userId, can_manage_clients: true, can_remove_owners: true,
+  })).error)
+}

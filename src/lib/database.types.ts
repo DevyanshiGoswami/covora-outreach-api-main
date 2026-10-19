@@ -119,6 +119,25 @@ isOneToOne: false
                   Relationships: [
 
                   ]
+                },"outreach_agency_permissions": {
+                  Row: {
+                    "can_manage_clients": boolean,"can_remove_owners": boolean,"user_id": string
+                  }
+                  Insert: {
+                    "can_manage_clients"?: boolean,"can_remove_owners"?: boolean,"user_id": string
+                  }
+                  Update: {
+                    "can_manage_clients"?: boolean,"can_remove_owners"?: boolean,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_agency_permissions_user_id_fkey"
+      columns: ["user_id"]
+isOneToOne: true
+      referencedRelation: "outreach_agency_memberships"
+      referencedColumns: ["user_id"]
+    }
+                  ]
                 },"outreach_campaign_daily": {
                   Row: {
                     "auto_replies": number,"campaign_id": string,"client_id": string,"contacted": number,"day": string,"new_contacted": number,"opportunities": number,"sent": number,"unique_clicks": number,"unique_opened": number,"unique_replies": number

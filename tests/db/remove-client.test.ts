@@ -3,7 +3,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { adminClient, anonClient } from '../helpers/admin'
 import { createTenant, createAdmin } from '../helpers/tenants'
-import { grantOutreachMembership, grantOutreachOwner } from '../helpers/outreach'
+import { grantOutreachMembership, grantOutreachOwner, grantAgencyControls } from '../helpers/outreach'
 import { loadTestEnv } from '../helpers/env'
 import { createOnboardingHandlers } from '../../src/lib/onboarding-api'
 
@@ -21,7 +21,7 @@ async function request(session: ReturnType<typeof anonClient>, clientId: string,
 }
 test('only active owners can remove clients, with exact name confirmation enforced by SQL', async t => {
   const tenant = await createTenant(t, { features: ['outreach_app'] })
-  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id)
+  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   const params = { p_client_id: tenant.client.id, p_name: tenant.client.name }
   assert.equal((await handler(await request(anonClient(), tenant.client.id, tenant.client.name))).status, 401)
   for (const role of ['client_admin', 'client_member', 'client_viewer', 'operator'] as const) {
@@ -39,7 +39,7 @@ test('only active owners can remove clients, with exact name confirmation enforc
 test('removal revokes only this client, retains history and identities, and is idempotent', async t => {
   const tenant = await createTenant(t, { features: ['outreach_app'] })
   const other = await createTenant(t, { features: ['outreach_app'] })
-  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id)
+  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   await grantOutreachMembership(tenant.user.id, tenant.client.id)
   await grantOutreachMembership(tenant.user.id, other.client.id)
   const invitation = await owner.supabase.rpc('create_outreach_invitation', { p_client_id: tenant.client.id, p_email: other.user.email, p_role: 'client_member' })
@@ -80,7 +80,7 @@ test('removal revokes only this client, retains history and identities, and is i
 })
 test('preview clients can be removed without granting live operations', async t => {
   const tenant = await createTenant(t, { features: [{ feature: 'outreach_app', config: { presentation_mode: 'preview' } }] })
-  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id)
+  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   assert.ifError((await owner.supabase.rpc('remove_outreach_client', { p_client_id: tenant.client.id, p_name: tenant.client.name })).error)
   assert.equal((await admin.from('client_features').select('enabled').eq('client_id', tenant.client.id).single()).data?.enabled, false)
 })
