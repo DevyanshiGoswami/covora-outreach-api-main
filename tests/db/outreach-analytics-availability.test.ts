@@ -1,3 +1,4 @@
+import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -62,9 +63,9 @@ test('missing or malformed availability is omitted instead of coerced to a boole
 })
 
 test('campaign projection retains its existing privilege and security boundary', () => {
-  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', 'supabase_db_Covora_Outreach_API'], { encoding: 'utf8' }).trim()
-  assert.equal(label, 'Covora_Outreach_API')
-  const result = execFileSync('docker', ['exec', 'supabase_db_Covora_Outreach_API', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', `
+  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', testDatabaseContainer], { encoding: 'utf8' }).trim()
+  assert.equal(label, testProjectId)
+  const result = execFileSync('docker', ['exec', testDatabaseContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', `
     select jsonb_build_object(
       'authenticated',has_function_privilege('authenticated','outreach_private.read_campaigns()','EXECUTE'),
       'anon',has_function_privilege('anon','outreach_private.read_campaigns()','EXECUTE'),

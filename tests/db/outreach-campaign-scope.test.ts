@@ -1,3 +1,4 @@
+import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
@@ -9,8 +10,8 @@ import { grantOutreachMembership } from '../helpers/outreach.ts'
 const admin = adminClient()
 const remoteId = () => String(parseInt(randomUUID().replaceAll('-', '').slice(0, 12), 16) + 1)
 function startSql(command: string) {
-  const container = 'supabase_db_Covora_Outreach_API'
-  assert.equal(execFileSync('docker', ['inspect', '--type', 'container', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', container], { encoding: 'utf8' }).trim(), 'Covora_Outreach_API')
+  const container = testDatabaseContainer
+  assert.equal(execFileSync('docker', ['inspect', '--type', 'container', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', container], { encoding: 'utf8' }).trim(), testProjectId)
   const child = spawn('docker', ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atq'], { stdio: ['pipe', 'pipe', 'pipe'] })
   let output = '', errors = ''
   child.stdout.on('data', chunk => { output += String(chunk) })
@@ -144,7 +145,7 @@ test('concurrent campaign withdrawal and dispatch serialize without a FK/client/
     // Establish that withdrawal has reached the before-cascade client fence.
     const deadline = Date.now() + 3000
     while (true) {
-      const waiting = execFileSync('docker', ['exec', 'supabase_db_Covora_Outreach_API', 'psql', '-U', 'postgres', '-d', 'postgres', '-Atq', '-c', `select count(*) from pg_stat_activity where wait_event_type='Lock' and query like 'delete from public.outreach_campaigns where id=%${f.campaign.id}%';`], { encoding: 'utf8' }).trim()
+      const waiting = execFileSync('docker', ['exec', testDatabaseContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-Atq', '-c', `select count(*) from pg_stat_activity where wait_event_type='Lock' and query like 'delete from public.outreach_campaigns where id=%${f.campaign.id}%';`], { encoding: 'utf8' }).trim()
       if (waiting === '1') break
       assert.ok(Date.now() < deadline, 'withdrawal should wait for the client fence')
       await new Promise(resolve => setTimeout(resolve, 25))

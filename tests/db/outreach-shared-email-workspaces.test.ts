@@ -1,3 +1,4 @@
+import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync, spawn } from 'node:child_process'
@@ -176,8 +177,8 @@ test('LinkedIn workspace and credential uniqueness remain exclusive to one tenan
 })
 
 function startSql(command: string) {
-  const container = 'supabase_db_Covora_Outreach_API'
-  assert.equal(execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', container], { encoding: 'utf8' }).trim(), 'Covora_Outreach_API')
+  const container = testDatabaseContainer
+  assert.equal(execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', container], { encoding: 'utf8' }).trim(), testProjectId)
   const child = spawn('docker', ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-Atq'], { stdio: ['pipe', 'pipe', 'pipe'] })
   let output = '', errors = ''
   child.stdout.on('data', value => { output += String(value) })

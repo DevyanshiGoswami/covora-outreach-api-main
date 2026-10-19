@@ -1,3 +1,4 @@
+import { resolveIntegrationCredential } from './integration-credentials'
 import 'server-only'
 import { createSupabaseAdminClient } from './supabase/admin'
 import { runtimeConfiguration } from './runtime-config'
@@ -26,7 +27,7 @@ export async function runLinkedinConversationBatch(deps: SyncDependencies) {
       await deps.markAttempt(binding)
       if (!await deps.enabled(binding)) continue
       if (!binding.campaigns.length) continue
-      const key = /^OUTREACH_HEYREACH_[A-Z0-9_]{1,100}$/.test(binding.credentialRef) ? deps.credentials[binding.credentialRef]?.trim() : null
+      const key = /^OUTREACH_HEYREACH_[A-Z0-9_]{1,100}$/.test(binding.credentialRef) ? await resolveIntegrationCredential(binding.credentialRef, deps.credentials) : null
       if (!key) { result.failed++; continue }
       const page = await deps.sync(binding, key)
       await deps.checkpoint(binding, page.nextCursor)
