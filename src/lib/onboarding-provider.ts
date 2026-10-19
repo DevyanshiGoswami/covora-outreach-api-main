@@ -2,8 +2,9 @@ import 'server-only'
 import { z } from 'zod'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
+export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready'
 export type ConnectionResult = {
-  state: ConnectionState; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
+  state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
 }
 export type ConnectionContext = {
   channel: 'email' | 'linkedin'; email: string; workspace: string; credential: string
@@ -11,7 +12,7 @@ export type ConnectionContext = {
 }
 export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number }
 class ProviderFailure extends Error {
-  constructor(readonly state: 'failed' | 'uncertain', readonly status?: number) { super('Connection unavailable') }
+  constructor(readonly state: 'failed' | 'uncertain', readonly status?: number, readonly failureCode?: ConnectionFailureCode) { super('Connection unavailable') }
 }
 const remoteId = z.union([z.number().int().positive().max(Number.MAX_SAFE_INTEGER), z.string().regex(/^[1-9][0-9]{0,15}$/)])
   .transform(String).refine(value => Number.isSafeInteger(Number(value)))
@@ -22,6 +23,22 @@ export function googleAuthorizationUrl(value: string): string {
   if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.port || url.username || url.password
     || !['/o/oauth2/auth', '/o/oauth2/v2/auth'].includes(url.pathname) || !url.searchParams.get('state')) throw new ProviderFailure('uncertain')
   return url.href
+}
+
+async function readProviderJson(response: Response): Promise<unknown> {
+    const reader = response.body?.getReader()
+    if (!reader) throw new ProviderFailure('uncertain')
+    let size = 0; let text = ''; const decoder = new TextDecoder('utf-8', { fatal: true })
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.length
+        if (size > 65536) { await reader.cancel(); throw new ProviderFailure('uncertain') }
+        text += decoder.decode(value, { stream: true })
+      }
+      return JSON.parse(text + decoder.decode()) as unknown
+    } finally { reader.releaseLock() }
 }
 
 function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
@@ -41,23 +58,21 @@ function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
       throw new ProviderFailure('failed', response.status)
     }
     if (!response.ok) {
-      await response.body?.cancel()
-      throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status)
+      let failureCode: ConnectionFailureCode | undefined
+      if (channel === 'email' && [401, 403].includes(response.status)) {
+        // Inspect only a bounded response and return fixed codes. Never expose service text.
+        try {
+          const body = z.object({ message: z.string().max(2000) }).safeParse(await readProviderJson(response))
+          if (body.success && body.data.message.startsWith('Invalid scope.')) {
+            failureCode = body.data.message.startsWith('Invalid scope. Required: accounts:create.') ? 'account_create_required'
+              : body.data.message.startsWith('Invalid scope. Required: accounts:read.') ? 'account_read_required' : 'access_denied'
+          }
+        } catch { /* The HTTP status remains authoritative when the error body is malformed. */ }
+      } else await response.body?.cancel()
+      throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status, failureCode)
     }
     if (response.status === 204) return null
-    const reader = response.body?.getReader()
-    if (!reader) throw new ProviderFailure('uncertain')
-    let size = 0; let text = ''; const decoder = new TextDecoder('utf-8', { fatal: true })
-    try {
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        size += value.length
-        if (size > 65536) { await reader.cancel(); throw new ProviderFailure('uncertain') }
-        text += decoder.decode(value, { stream: true })
-      }
-      return JSON.parse(text + decoder.decode()) as unknown
-    } finally { reader.releaseLock() }
+    return readProviderJson(response)
   }
 }
 
@@ -87,18 +102,21 @@ export async function discoverEmailWorkspace(options: ProviderOptions): Promise<
 
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
   input: { password?: string; country?: string; pin?: string } = {}): Promise<ConnectionResult> {
+  let stage = 'workspace_check'
   try {
     const request = transport(context.channel, options)
     if (context.channel === 'email') {
       const workspace = z.object({ id: z.uuid() }).parse(await request('/workspaces/current'))
-      if (workspace.id !== context.workspace) return { state: 'failed' }
+      if (workspace.id !== context.workspace) return { state: 'failed', failureCode: 'workspace_mismatch' }
       if (action === 'start') {
+        stage = 'google_start'
         const result = z.object({ session_id: z.uuid(), auth_url: z.string().max(16000), expires_at: z.iso.datetime({ offset: true }) })
           .parse(await request('/oauth/google/init', {}))
         if (Date.parse(result.expires_at) <= Date.now()) return { state: 'expired' }
         return { state: 'pending', remoteSession: result.session_id, authUrl: googleAuthorizationUrl(result.auth_url) }
       }
       if (action !== 'poll' || !context.remoteSession || !z.uuid().safeParse(context.remoteSession).success) return { state: 'failed' }
+      stage = 'google_status'
       // Instantly consumes success/error on the first read. The database lease
       // serializes this request and persists its result before replying to the UI.
       const result = z.discriminatedUnion('status', [
@@ -106,10 +124,11 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         z.object({ status: z.literal('success'), email, account_id: email }),
       ]).parse(await request(`/oauth/session/status/${encodeURIComponent(context.remoteSession)}`))
       if (result.status === 'success') {
-        if (result.email !== context.email || result.account_id !== context.email) return { state: 'failed' }
+        if (result.email !== context.email || result.account_id !== context.email) return { state: 'failed', failureCode: 'mailbox_mismatch' }
+        stage = 'account_check'
         const account = z.object({ email, organization: z.uuid(), status: z.number(), setup_pending: z.boolean().optional() })
           .parse(await request(`/accounts/${encodeURIComponent(context.email)}`))
-        if (account.email !== context.email || account.organization !== context.workspace || account.status !== 1 || account.setup_pending) return { state: 'failed' }
+        if (account.email !== context.email || account.organization !== context.workspace || account.status !== 1 || account.setup_pending) return { state: 'failed', failureCode: 'account_not_ready' }
         return { state: 'connected', remoteAccount: result.account_id }
       }
       return { state: result.status === 'error' ? 'failed' : result.status }
@@ -144,6 +163,13 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
     // Never return/log provider text, password, PIN, key or transport diagnostics.
     // Poll/PIN failures on HeyReach are safe to check again; Connect is never replayed.
     if (context.channel === 'linkedin' && action !== 'start') return { state: 'pending' }
+    if (context.channel === 'email') {
+      const status = error instanceof ProviderFailure ? error.status : undefined
+      const failureCode = (error instanceof ProviderFailure ? error.failureCode : undefined)
+        ?? (status === 401 ? 'key_rejected' : status === 403 ? 'access_denied' : status === 429 ? 'rate_limited' : 'service_unavailable')
+      console.warn('Email account connection failed', { action, stage, status, failureCode })
+      return { state: error instanceof ProviderFailure ? error.state : 'uncertain', failureCode }
+    }
     return { state: error instanceof ProviderFailure ? error.state : 'uncertain' }
   }
 }
