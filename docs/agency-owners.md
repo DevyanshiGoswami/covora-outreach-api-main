@@ -19,13 +19,15 @@ The email is bound by the invitation and cannot be replaced with a different add
 
 ## Backend enforcement
 
-Migration `0106_outreach_owner_invitations.sql` adds hashed owner invitations, owner audit events, and private password-readiness tracking. The password tracker records only a timestamp after a confirmed account changes its password, not a password/hash. This avoids treating Auth's initial random invite password as the recipient's chosen password.
+Migration `0112_outreach_owner_invitations.sql` adds hashed owner invitations, owner audit events, and private password-readiness tracking. The password tracker records only a timestamp after a confirmed account changes its password, not a password/hash. This avoids treating Auth's initial random invite password as the recipient's chosen password.
 
 All management and acceptance routes require a verified bearer. SQL independently checks explicit active agency membership, target email confirmation, expiry, inviter membership version, and target membership version. Acceptance is serialized and idempotent. Accepted links cannot restore revoked ownership. Removal invalidates pending invitations from that owner. Separate client memberships are preserved.
 
 Routes: `GET/DELETE /api/outbound/owners`, `POST/DELETE /api/outbound/owners/invitations`, and `POST /api/outbound/owners/inspect` or `/accept`. Frontend uses server actions against the configured backend. Privileged Auth provisioning stays on the backend. No API keys enter browser code.
 
 ## Release requirements
+
+Migration number 0112 is reserved after the pending account/integration migrations 0106–0111. Coordinate release order with those separate changes; this branch does not include them.
 
 Review and apply the additive migration to the intended Outreach environment, deploy the matching backend, then deploy the frontend. Preserve existing auth/API target configuration. Backend requires its existing service credential for new-account activation links. Public signup stays disabled. No provider credentials are needed for this feature.
 
