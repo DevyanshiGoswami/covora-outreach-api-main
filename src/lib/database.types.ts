@@ -483,7 +483,7 @@ isOneToOne: false
                     "actor_id"?: string | null,"created_at"?: string,"event_type"?: string,"id"?: string,"subject_id"?: string
                   }
                   Relationships: [
-
+                    
                   ]
                 },"outreach_owner_invitations": {
                   Row: {
@@ -496,7 +496,7 @@ isOneToOne: false
                     "accepted_by"?: string | null,"accepted_version"?: number | null,"created_at"?: string,"email"?: string,"expires_at"?: string,"id"?: string,"invited_by"?: string,"inviter_version"?: number,"requires_password"?: boolean,"status"?: string,"target_user_id"?: string | null,"target_version"?: number | null,"token_hash"?: string
                   }
                   Relationships: [
-
+                    
                   ]
                 },"outreach_owner_password_setup": {
                   Row: {
@@ -509,9 +509,9 @@ isOneToOne: false
                     "changed_at"?: string,"user_id"?: string
                   }
                   Relationships: [
-
+                    
                   ]
-},"outreach_reply_commands": {
+                },"outreach_reply_commands": {
                   Row: {
                     "actor_user_id": string,"authority_stamp": string,"body_text": string,"channel": string,"claim_token": string | null,"client_id": string,"conversation_id": string,"conversation_version": number,"created_at": string,"error_code": string | null,"expires_at": string | null,"id": string,"latest_message_id": string,"remote_message_id": string | null,"sender_id": string,"sender_version": number,"status": string,"updated_at": string,"workspace_version": number
                   }
