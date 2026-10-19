@@ -82,6 +82,13 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       checkDatabaseError(result.error)
       return json({ clientId: z.uuid().parse(result.data) }, 201)
     }),
+    removeClient: handle(async (request, client) => {
+      const value = await input(request, z.strictObject({ clientId: z.uuid(), name: z.string().min(1).max(200) }))
+      const result = await client.rpc('remove_outreach_client', { p_client_id: value.clientId, p_name: value.name })
+      if (result.error?.code === '55000') return json({ error: 'A reply is being sent. Wait a minute, refresh, and try again.' }, 409)
+      checkDatabaseError(result.error)
+      return json({ ok: true })
+    }),
     people: handle(async (request, client) => {
       const params = [...new URL(request.url).searchParams]
       if (params.length !== 1 || params[0][0] !== 'clientId' || !z.uuid().safeParse(params[0][1]).success) throw new ApiError(400)

@@ -42,6 +42,34 @@ async function fixture(t: TestContext, channel: 'email' | 'linkedin' = 'email') 
   return { a, b, person, workspace: workspace.data!, sender: sender.data!, campaign: campaign?.data ?? null, conversation: thread.data!, message: message.data!, detail, enqueue }
 }
 
+test('client removal fences queued/preparing replies and preserves uncertain history', async t => {
+  for (const status of ['queued', 'preparing', 'unknown'] as const) {
+    const f = await fixture(t)
+    const owner = await f.person('owner')
+    const queued = await f.enqueue(); assert.ifError(queued.error)
+    const id = (queued.data as unknown as Command).id
+    const claim = status === 'queued' ? null : await admin.rpc('claim_outreach_reply', { p_command_id: id })
+    if (claim) assert.ifError(claim.error)
+    if (status === 'unknown') assert.ifError((await admin.from('outreach_reply_commands').update({ status: 'unknown' }).eq('id', id)).error)
+    assert.ifError((await owner.session.rpc('remove_outreach_client', { p_client_id: f.a.client.id, p_name: f.a.client.name })).error)
+    assert.equal((await admin.from('outreach_reply_commands').select('status').eq('id', id).single()).data?.status, status === 'unknown' ? 'unknown' : 'cancelled')
+    if (claim) assert.equal((await admin.rpc('dispatch_outreach_reply', { p_command_id: id, p_claim_token: (claim.data as unknown as Claim).claimToken })).data, false)
+    else assert.equal((await admin.rpc('claim_outreach_reply', { p_command_id: id })).data, null)
+    assert.deepEqual((await admin.from('outreach_reply_workspaces').select('enabled,sync_enabled').eq('id', f.workspace.id).single()).data, { enabled: false, sync_enabled: false })
+    assert.equal((await admin.from('outreach_conversation_messages').select('id').eq('id', f.message.id)).data?.length, 1)
+  }
+})
+test('client removal refuses an active dispatch without partially revoking access', async t => {
+  const f = await fixture(t); const owner = await f.person('owner')
+  const queued = await f.enqueue(); assert.ifError(queued.error)
+  const id = (queued.data as unknown as Command).id
+  const claim = await admin.rpc('claim_outreach_reply', { p_command_id: id }); assert.ifError(claim.error)
+  assert.equal((await admin.rpc('dispatch_outreach_reply', { p_command_id: id, p_claim_token: (claim.data as unknown as Claim).claimToken })).data, true)
+  assert.equal((await owner.session.rpc('remove_outreach_client', { p_client_id: f.a.client.id, p_name: f.a.client.name })).error?.code, '55000')
+  assert.equal((await admin.from('client_features').select('enabled').eq('client_id', f.a.client.id).single()).data?.enabled, true)
+  assert.equal((await admin.from('outreach_memberships').select('state').eq('client_id', f.a.client.id).eq('user_id', f.a.user.id).single()).data?.state, 'active')
+})
+
 test('preview workspaces deny replies despite real bindings, and recheck preview before claim and dispatch', async t => {
   for (const channel of ['email', 'linkedin'] as const) {
     const f = await fixture(t, channel)
