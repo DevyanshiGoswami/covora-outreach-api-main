@@ -1,3 +1,4 @@
+import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -149,10 +150,10 @@ test('RPC independently rejects malformed filters and schema rejects unsafe prof
     const inserted = await admin.from('outreach_leads').insert({ client_id: f.tenant.client.id, campaign_id: f.campaignId, email: 'invalid@example.test', ...values })
     assert.equal(inserted.error?.code, '23514')
   }
-  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', 'supabase_db_Covora_Outreach_API'], { encoding: 'utf8' }).trim()
-  assert.equal(label, 'Covora_Outreach_API')
+  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', testDatabaseContainer], { encoding: 'utf8' }).trim()
+  assert.equal(label, testProjectId)
   const sql = "select prosecdef and proconfig @> array['search_path=pg_catalog, public, pg_temp'] and has_function_privilege('authenticated',oid,'EXECUTE') and not has_function_privilege('anon',oid,'EXECUTE') and not has_function_privilege('service_role',oid,'EXECUTE') from pg_proc where proname='list_outreach_leads';"
-  assert.equal(execFileSync('docker', ['exec', 'supabase_db_Covora_Outreach_API', 'psql', '-U', 'postgres', '-d', 'postgres', '-Atq', '-c', sql], { encoding: 'utf8' }).trim(), 't')
+  assert.equal(execFileSync('docker', ['exec', testDatabaseContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-Atq', '-c', sql], { encoding: 'utf8' }).trim(), 't')
 })
 
 test('malformed older email rows are unavailable with unknown verification and display values are bounded', async t => {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { testProjectId } from './stack.ts'
 
 export type TestEnv = { URL: string; ANON: string; SERVICE: string }
 let loaded: TestEnv | null = null
@@ -18,7 +19,7 @@ export function loadTestEnv(): TestEnv {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = ANON
   process.env.SUPABASE_SERVICE_ROLE_KEY = SERVICE
   process.env.OUTREACH_SUPABASE_PROJECT_REF = 'local-outreach'
-  process.env.OUTREACH_ALERT_TEST_PROJECT = 'Covora_Outreach_API'
+  process.env.OUTREACH_ALERT_TEST_PROJECT = testProjectId
   loaded = { URL, ANON, SERVICE }
   return loaded
 }

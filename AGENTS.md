@@ -13,3 +13,13 @@ This is the independent outbound platform backend authorized by Rami on October 
 - Run unit, tenant/role database tests, lint, types, runtime dependency audit and production build. Verify positive and denied API flows with the new login before cutting over the outbound frontend.
 - User authorized building and deploying the independent outbound platform. Required paid resources, if any, need a concrete cost check; no billing-plan upgrade or unrelated project mutation.
 - Keep commits area-prefixed and document nontrivial extraction decisions and verification limitations.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

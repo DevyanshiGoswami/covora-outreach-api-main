@@ -10,3 +10,6 @@ supabase/.branches/
 .DS_Store
 .agents/
 skills-lock.json
+
+# Private local owner demo credentials
+.owner-demo.json

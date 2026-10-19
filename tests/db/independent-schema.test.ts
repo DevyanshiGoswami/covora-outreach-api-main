@@ -1,3 +1,4 @@
+import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -8,9 +9,9 @@ import { grantOutreachMembership, grantOutreachOwner } from '../helpers/outreach
 
 const admin = adminClient()
 function sql(command: string) {
-  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', 'supabase_db_Covora_Outreach_API'], { encoding: 'utf8' }).trim()
-  assert.equal(label, 'Covora_Outreach_API')
-  return execFileSync('docker', ['exec', 'supabase_db_Covora_Outreach_API', 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', command], { encoding: 'utf8' }).trim()
+  const label = execFileSync('docker', ['inspect', '--format', '{{index .Config.Labels "com.supabase.cli.project"}}', testDatabaseContainer], { encoding: 'utf8' }).trim()
+  assert.equal(label, testProjectId)
+  return execFileSync('docker', ['exec', testDatabaseContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-Atq', '-c', command], { encoding: 'utf8' }).trim()
 }
 
 test('independent foundation has no legacy data tables, inferred roles or open RLS tables', () => {
