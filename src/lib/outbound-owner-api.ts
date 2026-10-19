@@ -19,6 +19,7 @@ const createdSchema = z.tuple([
 ]);
 const ownerList = z.object({
   userId: z.uuid(),
+  canRemoveOwners: z.boolean().default(false),
   owners: z.array(
     z.object({
       userId: z.uuid(),

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 import { adminClient, anonClient } from '../helpers/admin.ts'
 import { createTenant, createUser } from '../helpers/tenants.ts'
-import { grantOutreachMembership, grantOutreachOwner } from '../helpers/outreach.ts'
+import { grantOutreachMembership, grantOutreachOwner, grantAgencyControls } from '../helpers/outreach.ts'
 
 type Command = { id: string; status: string; bodyText: string }
 type Detail = { id: string; version: number; latestMessageId: string; latestAt: string; owner: { kind: string; userId: string | null; name: string }; ownedByMe: boolean; canTakeover: boolean; canReply: boolean; unread: boolean; messages: { id: string }[]; commands: Command[] }
@@ -45,7 +45,7 @@ async function fixture(t: TestContext, channel: 'email' | 'linkedin' = 'email') 
 test('client removal fences queued/preparing replies and preserves uncertain history', async t => {
   for (const status of ['queued', 'preparing', 'unknown'] as const) {
     const f = await fixture(t)
-    const owner = await f.person('owner')
+    const owner = await f.person('owner'); await grantAgencyControls(owner.user.id)
     const queued = await f.enqueue(); assert.ifError(queued.error)
     const id = (queued.data as unknown as Command).id
     const claim = status === 'queued' ? null : await admin.rpc('claim_outreach_reply', { p_command_id: id })
@@ -60,7 +60,7 @@ test('client removal fences queued/preparing replies and preserves uncertain his
   }
 })
 test('client removal refuses an active dispatch without partially revoking access', async t => {
-  const f = await fixture(t); const owner = await f.person('owner')
+  const f = await fixture(t); const owner = await f.person('owner'); await grantAgencyControls(owner.user.id)
   const queued = await f.enqueue(); assert.ifError(queued.error)
   const id = (queued.data as unknown as Command).id
   const claim = await admin.rpc('claim_outreach_reply', { p_command_id: id }); assert.ifError(claim.error)

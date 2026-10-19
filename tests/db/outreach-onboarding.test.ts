@@ -3,7 +3,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { adminClient, anonClient } from '../helpers/admin'
 import { createTenant, createAdmin } from '../helpers/tenants'
-import { grantOutreachMembership, grantOutreachOwner } from '../helpers/outreach'
+import { grantOutreachMembership, grantOutreachOwner, grantAgencyControls } from '../helpers/outreach'
 import { loadTestEnv } from '../helpers/env'
 import { createOnboardingHandlers } from '../../src/lib/onboarding-api'
 import { peopleSchema, portalContextSchema } from '../../src/lib/onboarding-contract'
@@ -28,7 +28,7 @@ async function request(session: ReturnType<typeof anonClient>, path: string, bod
   return new Request(`http://localhost/api/onboarding/${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
 }
 test('owner creates clients; other roles cannot; direct private table/RPC access denied', async t => {
-  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id)
+  const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   const id = randomUUID(); t.after(async () => { await admin.from('clients').delete().eq('id', id) })
   const created = await owner.supabase.rpc('create_outreach_client', { p_id: id, p_name: 'New customer' }); assert.ifError(created.error)
   const ctx = portalContextSchema.parse((await owner.supabase.rpc('outreach_portal_context')).data)

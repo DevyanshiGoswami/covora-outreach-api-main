@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const channelSchema = z.enum(['email', 'linkedin'])
 export const portalContextSchema = z.object({
-  userId: z.uuid(), isOwner: z.boolean(), workspaces: z.array(z.object({ id: z.uuid(), name: z.string(), role: z.string() })),
+  userId: z.uuid(), isOwner: z.boolean(), canManageClients: z.boolean().default(false), workspaces: z.array(z.object({ id: z.uuid(), name: z.string(), role: z.string() })),
 })
 export const connectionSchema = z.object({
   id: z.uuid(), channel: channelSchema,

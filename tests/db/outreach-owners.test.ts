@@ -6,6 +6,7 @@ import { createTenant, createUser } from "../helpers/tenants.ts";
 import {
   grantOutreachMembership,
   grantOutreachOwner,
+  grantAgencyControls,
 } from "../helpers/outreach.ts";
 import { loadTestEnv } from "../helpers/env.ts";
 import { createOwnerHandlers } from "../../src/lib/outbound-owner-api.ts";
@@ -14,6 +15,7 @@ async function fixture(t: TestContext) {
   const tenant = await createTenant(null, { features: ["outreach_app"] });
   const owner = await createUser();
   await grantOutreachOwner(owner.user.id);
+  await grantAgencyControls(owner.user.id);
   await grantOutreachMembership(
     tenant.user.id,
     tenant.client.id,
