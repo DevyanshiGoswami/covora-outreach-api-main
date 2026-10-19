@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, connectAccount, googleAuthorizationUrl } from './onboarding-provider'
+import { checkConnectionWorkspace, connectAccount, googleAuthorizationUrl, type ConnectionResult } from './onboarding-provider'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
 const workspaceOption = z.object({ id: z.string().regex(/^[a-z0-9-]{1,60}$/), label: z.string().min(1).max(100),
@@ -163,17 +163,19 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       checkDatabaseError(prepared.error)
       const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
       const admin = service(config)
+      let failureCode: ConnectionResult['failureCode']
       if (claim.claim_token) {
         const result = await admin.rpc('read_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token })
         checkDatabaseError(result.error)
         const scope = privateContext.safeParse(result.data)
         if (!scope.success) throw new ApiError(403)
         const key = await credential(scope.data.credential, config)
-        const observation = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal }, {
+        const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
           ...('pin' in value ? { pin: value.pin } : {}),
         })
-          : { state: 'failed' as const }
+          : { state: 'failed', ...(scope.data.channel === 'email' ? { failureCode: 'key_rejected' as const } : {}) }
+        failureCode = observation.failureCode
         const finished = await admin.rpc('finish_outreach_connection', {
           p_id: claim.connection_id, p_lease: claim.claim_token, p_state: observation.state,
           ...('remoteSession' in observation && observation.remoteSession ? { p_remote_session: observation.remoteSession } : {}),
@@ -189,6 +191,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       checkDatabaseError(saved.error)
       if (!saved.data) throw new ApiError(500)
       return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at,
+        ...(failureCode ? { failureCode } : {}),
         authUrl: saved.data.state === 'pending' && saved.data.auth_url ? googleAuthorizationUrl(saved.data.auth_url) : null })
     }),
   }

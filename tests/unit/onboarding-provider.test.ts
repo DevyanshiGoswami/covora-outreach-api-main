@@ -18,17 +18,17 @@ test('Google initialization only accepts a Google authorization URL and verifies
   for (const url of ['https://accounts.google.com.evil.test/o/oauth2/auth?state=x', 'https://evil.test', 'javascript:alert(1)', 'https://accounts.google.com@evil.test', 'https://accounts.google.com/other?state=x']) assert.throws(() => googleAuthorizationUrl(url))
 })
 test('wrong workspace prevents OAuth initialization', async () => {
-  assert.deepEqual(await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { state: 'failed' })
+  assert.deepEqual(await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { state: 'failed', failureCode: 'workspace_mismatch' })
 })
 test('Google success is bound to the expected mailbox and account workspace', async () => {
   assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'success', email: context.email, account_id: context.email }, { email: context.email, organization: workspace, status: 1, setup_pending: false }]) }), { state: 'connected', remoteAccount: context.email })
-  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'success', email: 'other@example.test', account_id: 'other@example.test' }]) }), { state: 'failed' })
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'success', email: 'other@example.test', account_id: 'other@example.test' }]) }), { state: 'failed', failureCode: 'mailbox_mismatch' })
 })
 test('timeouts and unrecognized consumed OAuth results remain uncertain with no automatic retry', async () => {
   let calls = 0
   const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: async () => { calls++; throw new Error('Do not expose credential diagnostics') } })
-  assert.deepEqual(result, { state: 'uncertain' }); assert.equal(calls, 1)
-  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'unexpected', password: 'sensitive' }]) }), { state: 'uncertain' })
+  assert.deepEqual(result, { state: 'uncertain', failureCode: 'service_unavailable' }); assert.equal(calls, 1)
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'unexpected', password: 'sensitive' }]) }), { state: 'uncertain', failureCode: 'service_unavailable' })
 })
 test('HeyReach Connect uses scoped transport and never requests personal inbox scraping', async () => {
   const result = await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: transport([{ linkedInAccountId: 123 }], (url, init) => {
@@ -65,4 +65,26 @@ test('verification classifies rejected keys, denied access, rate limits and serv
   for (const [status, code] of [[401, 'key_rejected'], [403, 'provider_access_denied'], [429, 'provider_rate_limited'], [503, 'provider_unavailable'], [202, 'key_verification_failed']] as const) {
     assert.deepEqual(await verifyConnectionWorkspace('linkedin', 'workspace', { key: 'synthetic', fetch: transport([new Response('private error', { status })]) }), { ok: false, code })
   }
+})
+
+test('Google permission errors become fixed codes without exposing credentials or service text', async (t) => {
+  const log = t.mock.method(console, 'warn', () => {})
+  for (const [status, message, code] of [
+    [401, 'Invalid scope. Required: accounts:create. Found: accounts:read', 'account_create_required'],
+    [403, 'Invalid scope. Required: accounts:read. Found: accounts:create', 'account_read_required'],
+    [401, 'secret-token-rejected', 'key_rejected'],
+    [403, 'private-error', 'access_denied'],
+    [429, 'private-error', 'rate_limited'],
+    [503, 'private-error', 'service_unavailable'],
+  ] as const) {
+    const calls: string[] = []
+    const result = await connectAccount(context, 'start', { key: 'secret-key', fetch: transport([{ id: workspace }, Response.json({ message }, { status })], url => calls.push(url)) })
+    assert.equal(result.failureCode, code)
+    assert.equal(result.state, status === 503 ? 'uncertain' : 'failed')
+    assert.equal(calls.length, 2)
+    assert.equal(result.authUrl, undefined)
+  }
+  const logs = JSON.stringify(log.mock.calls.map(call => call.arguments))
+  assert.ok(logs.includes('google_start'))
+  for (const secret of ['secret-key', 'secret-token-rejected', 'private-error', context.email, workspace]) assert.ok(!logs.includes(secret))
 })
