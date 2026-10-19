@@ -987,6 +987,9 @@ isOneToOne: false
 "release_outreach_sync_lock":
 { Args: { "p_token": string }; Returns: boolean
                            },
+"remove_outreach_client":
+{ Args: { "p_client_id": string,"p_name": string }; Returns: undefined
+                           },
 "remove_outreach_integration":
 { Args: { "p_actor": string,"p_actor_version": number,"p_id": string,"p_version": number }; Returns: undefined
                            },
