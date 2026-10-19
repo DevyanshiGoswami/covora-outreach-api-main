@@ -6,6 +6,8 @@
     "node": "22.x"
   },
   "scripts": {
+    "setup:local": "node scripts/local-portal.mjs setup",
+    "dev:local": "node scripts/local-portal.mjs dev",
     "dev": "next dev --hostname 127.0.0.1 --port 3011",
     "build": "next build",
     "start": "next start",

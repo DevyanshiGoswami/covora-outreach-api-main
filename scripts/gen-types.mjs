@@ -31,6 +31,7 @@ try {
   const output = run(['gen', 'types', 'typescript', '--local', '--schema', 'public'])
   const generated = output.split(/\r?\n/)
     .filter(line => !line.startsWith('{"_tag"'))
+    .map(line => line.trimEnd())
     .join('\n').trimStart()
   assert.match(generated, /^export type Json\b/)
   assert.match(generated, /export type Database\s*=/)

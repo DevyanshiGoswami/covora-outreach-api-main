@@ -1,10 +1,12 @@
 # Covora Outreach API
 
-Independent backend for the outbound client platform at covora.app. It owns account setup, tenant/team access, email and LinkedIn conversation mirrors, and explicitly gated replies. The separate frontend receives only neutral, tenant-authorized data.
+Independent outbound API for the existing `covora-outreach` frontend. It owns account onboarding, tenant/team access, email and LinkedIn conversation mirrors, and explicitly gated replies. The frontend receives tenant-authorized data; this repository does not serve a separate portal UI.
 
 The existing content portal is not a runtime dependency. This service uses a dedicated Supabase database and Auth project, its own Vercel deployment and provider credentials. Runtime configuration refuses the content portal database. No legacy content, publishing, billing or generation workers are included.
 
 ## Development
+
+For the new **admin/client login → client workspace → add person → connect accounts** flow, see [Account onboarding](docs/account-onboarding.md). It includes local startup, demo login, provider configuration, and operational limitations.
 
 Use Node 22, `npm ci`, and the project's isolated Supabase stack. Local services use ports 60321–60329 and project ID `Covora_Outreach_API`; never reset another stack. Copy `.env.example` into an ignored local file with local-only values and `OUTREACH_SUPABASE_PROJECT_REF=local-outreach`. Production secrets are never development fixtures.
 

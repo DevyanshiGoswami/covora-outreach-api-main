@@ -176,6 +176,44 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_connection_reservations": {
+                  Row: {
+                    "channel": string,"email": string,"person_id": string
+                  }
+                  Insert: {
+                    "channel": string,"email": string,"person_id": string
+                  }
+                  Update: {
+                    "channel"?: string,"email"?: string,"person_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_connection_reservations_person_id_fkey"
+      columns: ["person_id"]
+isOneToOne: false
+      referencedRelation: "outreach_people"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"outreach_connections": {
+                  Row: {
+                    "actor_id": string,"auth_url": string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at": string,"expected_email": string,"expires_at": string,"id": string,"lease_id": string | null,"lease_until": string | null,"next_poll_at": string | null,"person_id": string,"remote_account": string | null,"remote_session": string | null,"state": string,"updated_at": string,"workspace_version": number
+                  }
+                  Insert: {
+                    "actor_id": string,"auth_url"?: string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at"?: string,"expected_email": string,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id": string,"remote_account"?: string | null,"remote_session"?: string | null,"state": string,"updated_at"?: string,"workspace_version": number
+                  }
+                  Update: {
+                    "actor_id"?: string,"auth_url"?: string | null,"authority_stamp"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"expected_email"?: string,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id"?: string,"remote_account"?: string | null,"remote_session"?: string | null,"state"?: string,"updated_at"?: string,"workspace_version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_connections_person_id_client_id_fkey"
+      columns: ["person_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_people"
+      referencedColumns: ["id","client_id"]
+    }
+                  ]
                 },"outreach_conversation_messages": {
                   Row: {
                     "body_text": string,"client_id": string,"conversation_id": string,"created_at": string,"direction": string,"id": string,"is_auto_reply": boolean,"remote_fingerprint": string | null,"remote_message_id": string,"sender_label": string,"sent_at": string,"source_message_id": string | null
@@ -300,6 +338,32 @@ isOneToOne: false
       referencedRelation: "outreach_lead_lists"
       referencedColumns: ["id","client_id"]
     }
+                  ]
+                },"outreach_integration_audit": {
+                  Row: {
+                    "actor_id": string,"created_at": string,"event": string,"id": number,"integration_id": string
+                  }
+                  Insert: {
+                    "actor_id": string,"created_at"?: string,"event": string,"id"?: never,"integration_id": string
+                  }
+                  Update: {
+                    "actor_id"?: string,"created_at"?: string,"event"?: string,"id"?: never,"integration_id"?: string
+                  }
+                  Relationships: [
+                    
+                  ]
+                },"outreach_integrations": {
+                  Row: {
+                    "channel": string,"check_error": boolean,"checked_at": string,"created_by": string,"credential_ref": string,"id": string,"label": string,"remote_workspace_id": string,"secret_id": string,"verified_at": string,"version": number
+                  }
+                  Insert: {
+                    "channel": string,"check_error"?: boolean,"checked_at"?: string,"created_by": string,"credential_ref": string,"id": string,"label": string,"remote_workspace_id": string,"secret_id": string,"verified_at"?: string,"version"?: number
+                  }
+                  Update: {
+                    "channel"?: string,"check_error"?: boolean,"checked_at"?: string,"created_by"?: string,"credential_ref"?: string,"id"?: string,"label"?: string,"remote_workspace_id"?: string,"secret_id"?: string,"verified_at"?: string,"version"?: number
+                  }
+                  Relationships: [
+                    
                   ]
                 },"outreach_invitations": {
                   Row: {
@@ -472,6 +536,25 @@ isOneToOne: false
       referencedColumns: ["id","client_id"]
     }
                   ]
+                },"outreach_onboarding_audit": {
+                  Row: {
+                    "actor_id": string,"client_id": string,"created_at": string,"event": string,"id": number,"subject_id": string
+                  }
+                  Insert: {
+                    "actor_id": string,"client_id": string,"created_at"?: string,"event": string,"id"?: never,"subject_id": string
+                  }
+                  Update: {
+                    "actor_id"?: string,"client_id"?: string,"created_at"?: string,"event"?: string,"id"?: never,"subject_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_onboarding_audit_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_owner_audit": {
                   Row: {
                     "actor_id": string | null,"created_at": string,"event_type": string,"id": string,"subject_id": string
@@ -510,6 +593,25 @@ isOneToOne: false
                   }
                   Relationships: [
                     
+                  ]
+                },"outreach_people": {
+                  Row: {
+                    "client_id": string,"created_at": string,"email": string,"id": string,"name": string,"source": string,"user_id": string | null
+                  }
+                  Insert: {
+                    "client_id": string,"created_at"?: string,"email": string,"id"?: string,"name": string,"source"?: string,"user_id"?: string | null
+                  }
+                  Update: {
+                    "client_id"?: string,"created_at"?: string,"email"?: string,"id"?: string,"name"?: string,"source"?: string,"user_id"?: string | null
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_people_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
                   ]
                 },"outreach_reply_commands": {
                   Row: {
@@ -752,11 +854,17 @@ isOneToOne: false
 "begin_outreach_account_check":
 { Args: { "p_account_id": string,"p_client_id": string }; Returns: string
                            },
+"bind_outreach_connection_workspace":
+{ Args: { "p_actor": string,"p_channel": string,"p_client": string,"p_credential": string,"p_workspace": string }; Returns: undefined
+                           },
 "change_outreach_conversation_owner":
 { Args: { "p_client_id": string,"p_conversation_id": string,"p_expected_version": number,"p_owner": string }; Returns: Json
                            },
 "change_outreach_membership":
 { Args: { "p_client_id": string,"p_expected_version": number,"p_role": string,"p_state": string,"p_user_id": string }; Returns: undefined
+                           },
+"check_outreach_integration":
+{ Args: { "p_actor": string,"p_actor_version": number,"p_id": string,"p_ok": boolean,"p_version": number }; Returns: undefined
                            },
 "claim_outreach_lead_alert":
 { Args: { "p_client_id": string,"p_user_id": string }; Returns: Json
@@ -770,6 +878,9 @@ isOneToOne: false
 "configure_outreach_lead_alert":
 { Args: { "p_client_id": string,"p_cooldown_hours"?: number,"p_enabled": boolean,"p_threshold"?: number,"p_user_id": string }; Returns: Json
                            },
+"create_outreach_client":
+{ Args: { "p_id": string,"p_name": string }; Returns: string
+                           },
 "create_outreach_invitation":
 { Args: { "p_client_id": string,"p_email": string,"p_role": string }; Returns: {
               "expires_at": string,"invitation_id": string,"token": string
@@ -779,6 +890,9 @@ isOneToOne: false
 { Args: { "p_email": string }; Returns: {
               "expires_at": string,"invitation_id": string,"token": string
             }[]
+                           },
+"create_outreach_person":
+{ Args: { "p_client_id": string,"p_email": string,"p_name": string }; Returns: string
                            },
 "dispatch_outreach_lead_alert":
 { Args: { "p_claim_token": string,"p_delivery_id": string }; Returns: Json
@@ -794,6 +908,9 @@ isOneToOne: false
                            },
 "finish_outreach_account_check":
 { Args: { "p_check_id": string,"p_error_code"?: string,"p_state"?: string }; Returns: boolean
+                           },
+"finish_outreach_connection":
+{ Args: { "p_address"?: string,"p_auth_url"?: string,"p_id": string,"p_lease": string,"p_remote_account"?: string,"p_remote_session"?: string,"p_state": string }; Returns: boolean
                            },
 "finish_outreach_lead_alert":
 { Args: { "p_claim_token": string,"p_delivery_id": string,"p_error_code"?: string,"p_status": string }; Returns: boolean
@@ -821,6 +938,9 @@ isOneToOne: false
 "list_outreach_owners":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
+"list_outreach_people":
+{ Args: { "p_client": string }; Returns: Json
+                           },
 "mark_outreach_conversation_read":
 { Args: { "p_client_id": string,"p_conversation_id": string }; Returns: undefined
                            },
@@ -830,6 +950,14 @@ isOneToOne: false
 "outreach_lead_alert_delivery_health":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
+"outreach_portal_context":
+{ Args: Record<PropertyKey, never>; Returns: Json
+                           },
+"prepare_outreach_connection":
+{ Args: { "p_action": string,"p_channel": string,"p_email"?: string,"p_person": string }; Returns: {
+              "claim_token": string,"connection_id": string
+            }[]
+                           },
 "purge_outreach_messages":
 { Args: { "p_campaign_id": string,"p_token": string }; Returns: boolean
                            },
@@ -838,8 +966,14 @@ isOneToOne: false
               "account_id": string,"client_id": string,"credential_ref": string,"email": string,"remote_workspace_id": string
             }[]
                            },
+"read_outreach_connection":
+{ Args: { "p_id": string,"p_lease": string }; Returns: Json
+                           },
 "read_outreach_conversation":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_client_id": string,"p_conversation_id": string,"p_limit"?: number }; Returns: Json
+                           },
+"read_outreach_integration_key":
+{ Args: { "p_ref": string }; Returns: string
                            },
 "read_outreach_reply":
 { Args: { "p_client_id": string,"p_command_id": string,"p_conversation_id": string }; Returns: Json
@@ -852,6 +986,9 @@ isOneToOne: false
                            },
 "release_outreach_sync_lock":
 { Args: { "p_token": string }; Returns: boolean
+                           },
+"remove_outreach_integration":
+{ Args: { "p_actor": string,"p_actor_version": number,"p_id": string,"p_version": number }; Returns: undefined
                            },
 "request_outreach_setup":
 { Args: { "p_channel": string,"p_client_id": string,"p_method": string }; Returns: string
@@ -870,6 +1007,9 @@ isOneToOne: false
                            },
 "revoke_outreach_owner_invitation":
 { Args: { "p_id": string }; Returns: undefined
+                           },
+"save_outreach_integration":
+{ Args: { "p_actor": string,"p_actor_version": number,"p_channel": string,"p_id": string,"p_key": string,"p_label": string,"p_version": number,"p_workspace": string }; Returns: undefined
                            },
 "sync_outreach_linkedin_conversation":
 { Args: { "p_campaign_id": string,"p_contact_address": string,"p_contact_name": string,"p_messages": Json,"p_remote_campaign_id": string,"p_remote_conversation_id": string,"p_sender_id": string,"p_sender_version": number,"p_subject": string,"p_workspace_version": number }; Returns: string

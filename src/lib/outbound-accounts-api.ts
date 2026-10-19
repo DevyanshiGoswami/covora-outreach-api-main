@@ -1,4 +1,5 @@
 import 'server-only'
+import { resolveIntegrationCredential } from './integration-credentials'
 import { requireRuntimeDatabase } from './runtime-config'
 import { createClient } from '@supabase/supabase-js'
 import { z } from 'zod'
@@ -39,10 +40,10 @@ async function input<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   return value.data
 }
 
-/** Only dedicated environment references are supported; a missing key is never replaced by the legacy key. */
-function credential(ref: string, config?: OutboundAccountApiConfig): string | undefined {
+/** Resolve an authorized dedicated environment or Vault reference; no legacy-key fallback. */
+async function credential(ref: string, request: Request, config?: OutboundAccountApiConfig): Promise<string | undefined> {
   if (!/^OUTREACH_INSTANTLY_[A-Z0-9_]+$/.test(ref)) return undefined
-  return (config?.credentials ?? process.env)[ref]?.trim() || undefined
+  return resolveIntegrationCredential(ref, config?.credentials ?? process.env, serviceClient(request, config))
 }
 
 /** Called only after the user-scoped workspace query or begin RPC authorizes the requested scope. */
@@ -108,7 +109,7 @@ export function createOutboundAccountHandlers(config?: OutboundAccountApiConfig)
       if (configured.data) {
         const parsed = workspaceConfigSchema.safeParse(configured.data)
         if (!parsed.success || parsed.data.client_id !== clientId.data) throw new ApiError(500)
-        verificationAvailable = parsed.data.enabled && Boolean(credential(parsed.data.credential_ref, config))
+        verificationAvailable = parsed.data.enabled && Boolean(await credential(parsed.data.credential_ref, request, config))
       }
       return json({ accounts, verificationAvailable })
     }),
@@ -134,7 +135,7 @@ export function createOutboundAccountHandlers(config?: OutboundAccountApiConfig)
       const parsed = checkSchema.safeParse(context.data)
       if (!parsed.success || parsed.data[0].client_id !== value.clientId || parsed.data[0].account_id !== value.accountId) throw new ApiError(500)
       const check = parsed.data[0]
-      const key = credential(check.credential_ref, config)
+      const key = await credential(check.credential_ref, request, config)
       const observation: ScopedAccountObservation = key
         ? await verifyScopedInstantlyAccount(check.email, {
           apiKey: key, expectedWorkspaceId: check.remote_workspace_id,
