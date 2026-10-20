@@ -68,7 +68,7 @@ test('LinkedIn assignments stay out of neutral email campaigns, statistics and l
     const result = await f.a.supabase.from(table).select('campaign_id')
     assert.ifError(result.error); assert.deepEqual(result.data, [{ campaign_id: email.data!.id }])
   }
-  assert.equal((await admin.from('outreach_sync_state').select('campaign_id').eq('campaign_id', f.campaign.id)).data?.length, 0)
+  assert.equal((await admin.from('outreach_sync_state').select('campaign_id').eq('campaign_id', f.campaign.id)).data?.length, 1)
 })
 
 test('import requires an approved same-tenant LinkedIn campaign and exact binding versions', async (t) => {

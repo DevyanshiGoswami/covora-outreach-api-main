@@ -18,6 +18,7 @@ import {
 } from '@/lib/outreach-sync-data'
 import { createSupabaseAdminClient } from '@/lib/supabase/admin'
 import { syncLinkedinConversations } from '@/lib/outreach-conversation-worker'
+import { syncNetworkCampaigns } from '@/lib/network-campaign-worker'
 
 type Admin = ReturnType<typeof createSupabaseAdminClient>
 type Campaign = Database['public']['Tables']['outreach_campaigns']['Row']
@@ -264,6 +265,9 @@ export async function syncOutreach(ctx: CronContext) {
     const linkedin = await syncLinkedinConversations(ctx).catch(() => ({ senders: 0, conversations: 0, failed: 1, deferred: 0 }))
     result.failed += linkedin.failed
     result.deferred += linkedin.deferred
+    const network = await syncNetworkCampaigns(ctx).catch(() => ({ campaigns: 0, failed: 1, deferred: 0 }))
+    result.failed += network.failed
+    result.deferred += network.deferred
     const candidates = await admin.from('outreach_sync_state').select('*, outreach_campaigns!inner(*)')
       .eq('outreach_campaigns.channel', 'email')
       .or(`retry_after.is.null,retry_after.lte.${new Date().toISOString()}`)
@@ -376,7 +380,7 @@ export async function syncOutreach(ctx: CronContext) {
         })
       }
     }
-    return { ...result, linkedin_senders: linkedin.senders, linkedin_conversations: linkedin.conversations }
+    return { ...result, linkedin_senders: linkedin.senders, linkedin_conversations: linkedin.conversations, network_campaigns: network.campaigns }
   } finally {
     check((await admin.rpc('release_outreach_sync_lock', { p_token: token })).error)
   }

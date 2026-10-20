@@ -837,6 +837,13 @@ isOneToOne: false
                   Relationships: [
 
                   ]
+                },"client_outreach_network_campaigns": {
+                  Row: {
+                    "client_id": string | null,"id": string | null,"name": string | null,"schedule": Json | null,"status": string | null,"synced_at": string | null,"totals": Json | null
+                  }
+                  Relationships: [
+
+                  ]
                 },"client_outreach_setup_requests": {
                   Row: {
                     "channel": string | null,"client_id": string | null,"created_at": string | null,"id": string | null,"method": string | null,"note": string | null,"status": string | null,"updated_at": string | null
@@ -969,6 +976,11 @@ isOneToOne: false
 "mark_outreach_messages_read":
 { Args: { "ids": (string)[] }; Returns: number
                            },
+"next_outreach_network_campaign":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "attempt_count": number,"client_id": string,"credential_ref": string,"id": string,"provider_campaign_id": string,"remote_sender_ids": (string)[],"remote_workspace_id": string,"sender_ids": (string)[],"sender_versions": (number)[],"workspace_id": string,"workspace_version": number
+            }[]
+                           },
 "outreach_lead_alert_delivery_health":
 { Args: Record<PropertyKey, never>; Returns: Json
                            },
@@ -1043,6 +1055,9 @@ isOneToOne: false
                            },
 "save_outreach_integration":
 { Args: { "p_actor": string,"p_actor_version": number,"p_channel": string,"p_id": string,"p_key": string,"p_label": string,"p_version": number,"p_workspace": string }; Returns: undefined
+                           },
+"save_outreach_network_campaign":
+{ Args: { "p_campaign_id": string,"p_name": string,"p_sender_ids": (string)[],"p_sender_versions": (number)[],"p_status": string,"p_totals": Json,"p_workspace_id": string,"p_workspace_version": number }; Returns: boolean
                            },
 "sync_outreach_linkedin_conversation":
 { Args: { "p_campaign_id": string,"p_contact_address": string,"p_contact_name": string,"p_messages": Json,"p_remote_campaign_id": string,"p_remote_conversation_id": string,"p_sender_id": string,"p_sender_version": number,"p_subject": string,"p_workspace_version": number }; Returns: string

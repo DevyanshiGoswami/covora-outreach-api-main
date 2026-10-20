@@ -167,12 +167,12 @@ test('email credentials must match one workspace across both registries; sole bi
   assert.ifError((await configure(reverse, reverse.b.client.id, replacement)).error)
 })
 
-test('LinkedIn workspace and credential uniqueness remain exclusive to one tenant', async t => {
+test('LinkedIn shared workspace permits reviewed tenant bindings but rejects credential mismatch', async t => {
   const f = await tenants(t)
   const row = { client_id: f.a.client.id, channel: 'linkedin', remote_workspace_id: f.remote, credential_ref: f.ref.replace('INSTANTLY', 'HEYREACH') }
   assert.ifError((await admin.from('outreach_reply_workspaces').insert(row)).error)
-  assert.equal((await admin.from('outreach_reply_workspaces').insert({ ...row, client_id: f.b.client.id, credential_ref: row.credential_ref + '_B' })).error?.code, '23505')
-  assert.equal((await admin.from('outreach_reply_workspaces').insert({ ...row, client_id: f.b.client.id, remote_workspace_id: randomUUID() })).error?.code, '23505')
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({ ...row, client_id: f.b.client.id })).error)
+  assert.equal((await admin.from('outreach_reply_workspaces').update({ remote_workspace_id: randomUUID() }).eq('client_id',f.b.client.id).eq('channel','linkedin')).error?.code, '22023')
   assert.ifError((await binding(f.b.client.id, f.remote, f.ref)).error)
 })
 
@@ -237,5 +237,27 @@ test('an existing credential guard rejects stale REPEATABLE READ configuration',
   } finally {
     if (!stale.child.stdin.writableEnded) stale.child.stdin.end('rollback;\n')
     await stale.done
+  }
+})
+
+
+test('concurrent network credential mismatch waits and rejects a different workspace', async t => {
+  const f = await tenants(t), ref=f.ref.replace('INSTANTLY','HEYREACH')
+  const first = startSql(`begin; insert into public.outreach_reply_workspaces(client_id,channel,remote_workspace_id,credential_ref) values('${f.a.client.id}','linkedin','${f.remote}','${ref}'); select 'holding';\n`)
+  let second: ReturnType<typeof startSql> | undefined
+  try {
+    await until(() => first.output().includes('holding'))
+    const app = `network_${randomUUID()}`
+    second = startSql(`set application_name='${app}'; begin; insert into public.outreach_reply_workspaces(client_id,channel,remote_workspace_id,credential_ref) values('${f.b.client.id}','linkedin','${randomUUID()}','${ref}'); commit;\n`)
+    second.child.stdin.end()
+    await until(async () => {
+      const observer = startSql(`select count(*) from pg_stat_activity where application_name='${app}' and wait_event_type='Lock';\n`)
+      observer.child.stdin.end();return (await observer.done).output.trim() === '1'
+    })
+    first.child.stdin.end('commit;\n');assert.equal((await first.done).code,0)
+    const result=await second.done;assert.notEqual(result.code,0);assert.match(result.errors,/22023/)
+  } finally {
+    if(!first.child.stdin.writableEnded) first.child.stdin.end('rollback;\n')
+    await first.done;if(second) await second.done
   }
 })
