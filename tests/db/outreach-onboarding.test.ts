@@ -198,3 +198,71 @@ test('integration binding requires owner and authenticated API never exposes con
   assert.equal(listed.status, 200)
   const text = await listed.text(); for (const secret of [tenant.workspace, 'OUTREACH_INSTANTLY_TEST', 'synthetic']) assert.ok(!text.includes(secret))
 })
+
+async function uncertainEmail(t: Parameters<typeof createTenant>[0]) {
+  const tenant = await setup(t)
+  const start = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(start.error)
+  const id = start.data![0].connection_id
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: id, p_lease: start.data![0].claim_token!, p_state: 'uncertain' })).data, true)
+  assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', id)).error)
+  return { ...tenant, id }
+}
+
+test('mailbox review confirms expired uncertain attempts without replaying OAuth and survives refresh', async t => {
+  const tenant = await uncertainEmail(t)
+  assert.ifError((await admin.from('outreach_connections').update({ expires_at: new Date(Date.now()-1000).toISOString() }).eq('id', tenant.id)).error)
+  const paths: string[] = []
+  const handlers = createOnboardingHandlers(config(async (url, init) => {
+    assert.equal(init?.method, 'GET'); const path = new URL(String(url)).pathname; paths.push(path)
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.includes('/accounts/')) return Response.json({ email: tenant.user.email, organization: tenant.workspace, status: 1, setup_pending: false })
+    throw new Error('OAuth must never be replayed')
+  }))
+  const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' }))
+  assert.equal(response.status, 200)
+  const result = await response.json(); assert.equal(result.state, 'connected'); assert.equal(result.reviewStatus, 'connected'); assert.equal(result.authUrl, null)
+  assert.equal(paths.length, 2)
+  assert.equal(peopleSchema.parse((await tenant.supabase.rpc('list_outreach_people', { p_client: tenant.client.id })).data).find(p=>p.id===tenant.person)!.connections[0].state, 'connected')
+  assert.equal((await admin.from('outreach_reply_senders').select('id').eq('client_id', tenant.client.id)).data!.length, 0)
+})
+
+test('review separates absence after expiry from absence during consent and unavailable evidence', async t => {
+  const tenant = await uncertainEmail(t)
+  let accountStatus = 404
+  const handlers = createOnboardingHandlers(config(async url => new URL(String(url)).pathname.endsWith('/workspaces/current')
+    ? Response.json({ id: tenant.workspace }) : Response.json({}, { status: accountStatus })))
+  async function review() {
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', tenant.id)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' })); assert.equal(response.status, 200); return response.json()
+  }
+  const waiting = await review(); assert.equal(waiting.state, 'uncertain'); assert.equal(waiting.reviewStatus, 'waiting')
+  assert.ifError((await admin.from('outreach_connections').update({ expires_at: new Date(Date.now()-1000).toISOString() }).eq('id', tenant.id)).error)
+  accountStatus = 503
+  const unavailable = await review(); assert.equal(unavailable.state, 'uncertain'); assert.equal(unavailable.reviewStatus, 'unavailable')
+  accountStatus = 404
+  const missing = await review(); assert.equal(missing.state, 'expired'); assert.equal(missing.reviewStatus, 'missing')
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-31000).toISOString() }).eq('id', tenant.id)).error)
+  const restart = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(restart.error); assert.ok(restart.data![0].claim_token)
+})
+
+test('review enforces self and tenant permissions, fences concurrent/revoked/changed-workspace completions', async t => {
+  const tenant = await uncertainEmail(t), owner = await createAdmin(t), other = await createAdmin(t)
+  await grantOutreachOwner(owner.user.id)
+  const args = { p_person: tenant.person }
+  for (const session of [owner.supabase, other.supabase, anonClient()]) assert.equal((await session.rpc('prepare_outreach_email_review', args)).error?.code, '42501')
+  assert.equal((await tenant.supabase.rpc('read_outreach_email_review', { p_id: tenant.id, p_lease: randomUUID() })).error?.code, '42501')
+  assert.equal((await tenant.supabase.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: randomUUID(), p_outcome: 'connected' })).error?.code, '42501')
+  const claims = await Promise.all([tenant.supabase.rpc('prepare_outreach_email_review', args), tenant.supabase.rpc('prepare_outreach_email_review', args)])
+  for (const claim of claims) assert.ifError(claim.error)
+  const tokens = claims.flatMap(c=>c.data!).filter(c=>c.claim_token); assert.equal(tokens.length, 1)
+  const lease = tokens[0].claim_token!
+  assert.ok((await admin.rpc('read_outreach_email_review', { p_id: tenant.id, p_lease: lease })).data)
+  assert.equal((await admin.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: randomUUID(), p_outcome: 'connected' })).data, false)
+  assert.ifError((await admin.from('outreach_account_workspaces').update({ version: 2 }).eq('client_id', tenant.client.id)).error)
+  assert.equal((await admin.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: lease, p_outcome: 'connected' })).data, false)
+  assert.ifError((await admin.from('outreach_connections').update({ lease_until: new Date(Date.now()-1000).toISOString(), next_poll_at: null }).eq('id', tenant.id)).error)
+  const renewed = await tenant.supabase.rpc('prepare_outreach_email_review', args); assert.ifError(renewed.error)
+  await grantOutreachMembership(tenant.user.id, tenant.client.id, 'client_viewer')
+  assert.equal((await tenant.supabase.rpc('prepare_outreach_email_review', args)).error?.code, '42501')
+  assert.equal((await admin.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: renewed.data![0].claim_token!, p_outcome: 'connected' })).data, false)
+})

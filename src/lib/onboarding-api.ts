@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, connectAccount, googleAuthorizationUrl, type ConnectionResult } from './onboarding-provider'
+import { checkConnectionWorkspace, connectAccount, googleAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
 const workspaceOption = z.object({ id: z.string().regex(/^[a-z0-9-]{1,60}$/), label: z.string().min(1).max(100),
@@ -57,6 +57,7 @@ async function context(client: SupabaseClient<Database>) {
   return portalContextSchema.parse(result.data)
 }
 const connectionInput = z.union([
+  z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: z.literal('email') }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email') }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), email,
     password: z.string().min(1).max(512), country: z.string().regex(/^[A-Z]{2}$/),
@@ -158,6 +159,33 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
     }),
     connection: handle(async (request, client) => {
       const value = await input(request, connectionInput)
+      if (value.action === 'review') {
+        const prepared = await client.rpc('prepare_outreach_email_review', { p_person: value.personId })
+        checkDatabaseError(prepared.error)
+        const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
+        const admin = service(config)
+        let outcome: 'connected' | 'missing' | 'unavailable' | undefined
+        let failureCode: ConnectionResult['failureCode']
+        if (claim.claim_token) {
+          const read = await admin.rpc('read_outreach_email_review', { p_id: claim.connection_id, p_lease: claim.claim_token })
+          checkDatabaseError(read.error)
+          const scope = privateContext.safeParse(read.data)
+          if (!scope.success) throw new ApiError(403)
+          const key = await credential(scope.data.credential, config)
+          const result = key ? await reviewEmailAccount(scope.data, { key, fetch: config?.providerFetch, signal: request.signal })
+            : { outcome: 'unavailable' as const, failureCode: 'key_rejected' as const }
+          outcome = result.outcome; failureCode = result.failureCode
+          const finished = await admin.rpc('finish_outreach_email_review', { p_id: claim.connection_id, p_lease: claim.claim_token, p_outcome: outcome })
+          checkDatabaseError(finished.error)
+          if (!finished.data) throw new ApiError(403)
+        }
+        const saved = await admin.from('outreach_connections').select('id,state,expires_at').eq('id', claim.connection_id).single()
+        checkDatabaseError(saved.error)
+        if (!saved.data) throw new ApiError(500)
+        return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at, authUrl: null,
+          reviewStatus: outcome === 'missing' ? (saved.data.state === 'expired' ? 'missing' : 'waiting') : outcome ?? 'checking',
+          ...(failureCode ? { failureCode } : {}) })
+      }
       const prepared = await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: value.action,
         ...('email' in value ? { p_email: value.email } : {}) })
       checkDatabaseError(prepared.error)

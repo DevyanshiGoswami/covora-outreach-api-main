@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { connectAccount, checkConnectionWorkspace, verifyConnectionWorkspace, googleAuthorizationUrl, type ConnectionContext } from '../../src/lib/onboarding-provider'
+import { connectAccount, reviewEmailAccount, checkConnectionWorkspace, verifyConnectionWorkspace, googleAuthorizationUrl, type ConnectionContext } from '../../src/lib/onboarding-provider'
 
 const workspace = '00000000-0000-4000-8000-000000000001'
 const sessionId = '00000000-0000-4000-8000-000000000002'
@@ -150,4 +150,24 @@ test('known OAuth failures and expired sessions retain their state without accou
     assert.equal(result.state, state)
     assert.equal(calls, 2)
   }
+})
+
+test('explicit review only reads workspace and reserved mailbox; missing differs from service errors', async () => {
+  for (const [response, outcome] of [
+    [{ email: context.email, organization: workspace, status: 1, setup_pending: false }, 'connected'],
+    [Response.json({}, { status: 404 }), 'missing'],
+    [Response.json({}, { status: 503 }), 'unavailable'],
+    [{ email: 'wrong@example.test', organization: workspace, status: 1 }, 'unavailable'],
+    [{ email: context.email, organization: sessionId, status: 1 }, 'unavailable'],
+    [{ email: context.email, organization: workspace, status: 1, setup_pending: true }, 'unavailable'],
+  ] as const) {
+    const paths: string[] = []
+    const result = await reviewEmailAccount(context, { key: 'synthetic', fetch: transport([{ id: workspace }, response], (url, init) => {
+      assert.equal(init?.method, 'GET'); paths.push(new URL(url).pathname)
+    }) })
+    assert.equal(result.outcome, outcome)
+    assert.deepEqual(paths, ['/api/v2/workspaces/current', `/api/v2/accounts/${encodeURIComponent(context.email)}`])
+  }
+  assert.equal((await reviewEmailAccount(context, { key: 'synthetic', fetch: transport([Response.json({}, { status: 404 })]) })).outcome, 'unavailable')
+  assert.deepEqual(await reviewEmailAccount(context, { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { outcome: 'unavailable', failureCode: 'workspace_mismatch' })
 })
