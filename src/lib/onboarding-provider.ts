@@ -109,6 +109,28 @@ async function confirmEmailAccount(context: ConnectionContext, request: ReturnTy
   return { state: 'connected', remoteAccount: context.email }
 }
 
+/** Independently inspect a reserved mailbox. This never calls an OAuth endpoint. */
+export async function reviewEmailAccount(context: ConnectionContext, options: ProviderOptions): Promise<{
+  outcome: 'connected' | 'missing' | 'unavailable'; failureCode?: ConnectionFailureCode
+}> {
+  if (context.channel !== 'email') return { outcome: 'unavailable' }
+  let workspaceVerified = false
+  try {
+    const request = transport('email', options)
+    if (z.object({ id: z.uuid() }).parse(await request('/workspaces/current')).id !== context.workspace) {
+      return { outcome: 'unavailable', failureCode: 'workspace_mismatch' }
+    }
+    workspaceVerified = true
+    const account = await confirmEmailAccount(context, request)
+    return account.state === 'connected' ? { outcome: 'connected' } : { outcome: 'unavailable', failureCode: 'account_not_ready' }
+  } catch (error) {
+    const status = error instanceof ProviderFailure ? error.status : undefined
+    if (workspaceVerified && status === 404) return { outcome: 'missing' }
+    return { outcome: 'unavailable', failureCode: (error instanceof ProviderFailure ? error.failureCode : undefined)
+      ?? (status === 401 ? 'key_rejected' : status === 403 ? 'access_denied' : status === 429 ? 'rate_limited' : 'service_unavailable') }
+  }
+}
+
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
   input: { password?: string; country?: string; pin?: string } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'

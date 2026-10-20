@@ -938,6 +938,9 @@ isOneToOne: false
 "finish_outreach_connection":
 { Args: { "p_address"?: string,"p_auth_url"?: string,"p_id": string,"p_lease": string,"p_remote_account"?: string,"p_remote_session"?: string,"p_state": string }; Returns: boolean
                            },
+"finish_outreach_email_review":
+{ Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
+                           },
 "finish_outreach_lead_alert":
 { Args: { "p_claim_token": string,"p_delivery_id": string,"p_error_code"?: string,"p_status": string }; Returns: boolean
                            },
@@ -989,6 +992,11 @@ isOneToOne: false
               "claim_token": string,"connection_id": string
             }[]
                            },
+"prepare_outreach_email_review":
+{ Args: { "p_person": string }; Returns: {
+              "claim_token": string,"connection_id": string
+            }[]
+                           },
 "purge_outreach_messages":
 { Args: { "p_campaign_id": string,"p_token": string }; Returns: boolean
                            },
@@ -1002,6 +1010,9 @@ isOneToOne: false
                            },
 "read_outreach_conversation":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_client_id": string,"p_conversation_id": string,"p_limit"?: number }; Returns: Json
+                           },
+"read_outreach_email_review":
+{ Args: { "p_id": string,"p_lease": string }; Returns: Json
                            },
 "read_outreach_integration_key":
 { Args: { "p_ref": string }; Returns: string
