@@ -71,7 +71,7 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       || (value.list !== '' && lead.listId !== value.list)
       || (lead.campaignId === null) !== (lead.campaignName === null)
       || (lead.listId === null) !== (lead.listName === null)
-      || (lead.campaignId === null) === (lead.listId === null)
+      || (lead.campaignId === null && lead.listId === null)
       || (lead.linkedinVerified === true && !lead.linkedinUrl))
       || new Set(page.leads.map(lead => lead.id)).size !== page.leads.length
       || new Set(page.campaigns.map(campaign => campaign.id)).size !== page.campaigns.length

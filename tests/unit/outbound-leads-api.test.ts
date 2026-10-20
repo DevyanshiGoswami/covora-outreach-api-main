@@ -97,14 +97,16 @@ test('RPC denied/invalid/unavailable responses return neutral errors; empty work
   assert.equal((await handlers.GET(request())).status, 200)
 })
 
-test('imported lead list filters project neutral list identity and reject impossible campaign/list combinations', async () => {
+test('imported lead list filters accept live campaign overlays and reject missing or mismatched identities', async () => {
   const listId = '5a3f2313-a651-4c74-ae2f-ec6a0fc8e86c'
   const row = { ...lead, campaignId: null, campaignName: null, listId, listName: 'Imported prospects' }
   const imported = { ...page, leads: [row], campaigns: [], lists: [{ id: listId, name: 'Imported prospects' }] }
   const { handlers,calls } = harness(imported)
   assert.equal((await handlers.GET(request(`clientId=${CLIENT}&list=${listId}`))).status,200)
   assert.equal(JSON.parse(calls[1].body).p_list,listId)
-  for (const wrong of [{...row,listId:USER},{...row,listName:null},{...row,campaignId:CAMPAIGN,campaignName:'Live'},{...row,listId:null,listName:null}]) {
+  const live=harness({...imported,leads:[{...row,campaignId:CAMPAIGN,campaignName:'Live',status:'bounced',emailVerification:'unverified',emailValidation:'invalid'}]})
+  assert.equal((await live.handlers.GET(request(`clientId=${CLIENT}&list=${listId}&campaign=${CAMPAIGN}`))).status,200)
+  for (const wrong of [{...row,listId:USER},{...row,listName:null},{...row,campaignId:CAMPAIGN,campaignName:null},{...row,listId:null,listName:null}]) {
     const bad=harness({...imported,leads:[wrong]})
     assert.equal((await bad.handlers.GET(request(`clientId=${CLIENT}&list=${listId}`))).status,500)
   }

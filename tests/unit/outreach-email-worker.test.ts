@@ -37,9 +37,9 @@ function harness(t: TestContext, options: {
       synced_at: now, messages_purged_at: null, totals: options.previousTotals ?? {} } }
   const db = (call: FetchCall) => {
     const url = new URL(call.url), table = url.pathname.split('/').at(-1)
-    if (url.pathname.includes('/rpc/')) return { body: table === 'purge_outreach_messages' ? false : table === 'reserve_outreach_email_request' ? options.permit !== false : true }
+    if (url.pathname.includes('/rpc/')) return { body: table === 'next_outreach_network_campaign' ? [] : table === 'purge_outreach_messages' ? false : table === 'reserve_outreach_email_request' ? options.permit !== false : true }
     if (call.method !== 'GET' && call.method !== 'HEAD') return { body: null }
-    if (table === 'outreach_sync_state') return { body: options.assigned === false ? [] : [state] }
+    if (table === 'outreach_sync_state') return { body: options.assigned === false || url.searchParams.get('outreach_campaigns.channel') === 'eq.linkedin' ? [] : [state] }
     if (table === 'outreach_reply_workspaces') return { body: { id: workspaceId, version: 1, remote_workspace_id: workspaceId, credential_ref: 'OUTREACH_INSTANTLY_UNIT', sync_enabled: true } }
     if (table === 'outreach_reply_senders') return { body: url.searchParams.get('channel') === 'eq.linkedin' || options.noBoundSenders ? [] : [
       { remote_sender_id: sender, sender_address: sender, enabled: false },
@@ -76,7 +76,7 @@ test('sync checks approved assignment and exact campaign senders before reading 
   assert.deepEqual(providerCalls(h.calls).map(call => new URL(call.url).pathname), [
     '/api/v2/workspaces/current', `/api/v2/campaigns/${remoteId}`, '/api/v2/emails',
   ])
-  const candidates = h.calls.find(call => call.url.includes('/outreach_sync_state') && call.method === 'GET')!
+  const candidates = h.calls.find(call => call.url.includes('/outreach_sync_state') && call.method === 'GET' && new URL(call.url).searchParams.get('outreach_campaigns.channel') === 'eq.email')!
   assert.equal(new URL(candidates.url).searchParams.get('outreach_campaigns.channel'), 'eq.email')
   const senders = h.calls.find(call => call.url.includes('/outreach_reply_senders') && new URL(call.url).searchParams.get('channel') === 'eq.email')!
   const query = new URL(senders.url).searchParams
