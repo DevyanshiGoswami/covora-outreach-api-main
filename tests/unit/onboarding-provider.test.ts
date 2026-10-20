@@ -88,3 +88,66 @@ test('Google permission errors become fixed codes without exposing credentials o
   assert.ok(logs.includes('google_start'))
   for (const secret of ['secret-key', 'secret-token-rejected', 'private-error', context.email, workspace]) assert.ok(!logs.includes(secret))
 })
+
+test('unreadable OAuth completion is reconciled from the exact active mailbox without replaying consent', async (t) => {
+  const log = t.mock.method(console, 'warn', () => {})
+  for (const completion of [
+    { status: 'success', email: context.email },
+    { status: 'success', email: context.email, account_id: sessionId },
+    { status: 'unexpected' },
+    Response.json({ error: 'private diagnostic' }, { status: 502 }),
+    Response.json({ error: 'session no longer available' }, { status: 404 }),
+  ]) {
+    const paths: string[] = []
+    const result = await connectAccount(context, 'poll', { key: 'secret-key', fetch: transport([
+      { id: workspace }, completion, { email: context.email, organization: workspace, status: 1, setup_pending: false },
+    ], url => paths.push(new URL(url).pathname)) })
+    assert.deepEqual(result, { state: 'connected', remoteAccount: context.email })
+    assert.deepEqual(paths, ['/api/v2/workspaces/current', `/api/v2/oauth/session/status/${sessionId}`, `/api/v2/accounts/${encodeURIComponent(context.email)}`])
+  }
+  const logs = JSON.stringify(log.mock.calls.map(call => call.arguments))
+  for (const secret of ['secret-key', 'private diagnostic', context.email, workspace, sessionId]) assert.ok(!logs.includes(secret))
+})
+
+test('reconciliation preserves review for missing, wrong-workspace, wrong-mailbox, inactive or unready accounts', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  for (const account of [
+    Response.json({}, { status: 404 }),
+    Response.json({}, { status: 503 }),
+    { email: context.email, organization: sessionId, status: 1 },
+    { email: 'someone-else@example.test', organization: workspace, status: 1 },
+    { email: context.email, organization: workspace, status: 2 },
+    { email: context.email, organization: workspace, status: 1, setup_pending: true },
+    { email: context.email, status: 1 },
+  ]) {
+    let calls = 0
+    assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([
+      { id: workspace }, { status: 'unexpected' }, account,
+    ], () => { calls++ }) }), { state: 'uncertain', failureCode: 'service_unavailable' })
+    assert.equal(calls, 3)
+  }
+})
+
+test('explicit OAuth identity mismatch is never reconciled even with incomplete success fields', async () => {
+  for (const result of [
+    { status: 'success', email: 'other@example.test' },
+    { status: 'success', email: 'other@example.test', account_id: sessionId },
+    { status: 'success', email: 'other@example.test', account_id: null },
+    { status: 'success', email: context.email, account_id: 'other@example.test' },
+  ]) {
+    let calls = 0
+    assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, result], () => { calls++ }) }),
+      { state: 'failed', failureCode: 'mailbox_mismatch' })
+    assert.equal(calls, 2)
+  }
+})
+
+test('known OAuth failures and expired sessions retain their state without account reconciliation', async (t) => {
+  t.mock.method(console, 'warn', () => {})
+  for (const [response, state] of [[{ status: 'error' }, 'failed'], [{ status: 'expired' }, 'expired'], [{ status: 'pending' }, 'pending'], [Response.json({}, { status: 403 }), 'failed']] as const) {
+    let calls = 0
+    const result = await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, response], () => { calls++ }) })
+    assert.equal(result.state, state)
+    assert.equal(calls, 2)
+  }
+})

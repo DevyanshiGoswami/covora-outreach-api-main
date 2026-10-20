@@ -100,14 +100,25 @@ export async function discoverEmailWorkspace(options: ProviderOptions): Promise<
   catch { return null }
 }
 
+async function confirmEmailAccount(context: ConnectionContext, request: ReturnType<typeof transport>): Promise<ConnectionResult> {
+  const account = z.object({ email, organization: z.uuid(), status: z.number(), setup_pending: z.boolean().optional() })
+    .parse(await request(`/accounts/${encodeURIComponent(context.email)}`))
+  if (account.email !== context.email || account.organization !== context.workspace || account.status !== 1 || account.setup_pending) {
+    return { state: 'failed', failureCode: 'account_not_ready' }
+  }
+  return { state: 'connected', remoteAccount: context.email }
+}
+
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
   input: { password?: string; country?: string; pin?: string } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'
+  let verifiedEmailRequest: ReturnType<typeof transport> | undefined
   try {
     const request = transport(context.channel, options)
     if (context.channel === 'email') {
       const workspace = z.object({ id: z.uuid() }).parse(await request('/workspaces/current'))
       if (workspace.id !== context.workspace) return { state: 'failed', failureCode: 'workspace_mismatch' }
+      verifiedEmailRequest = request
       if (action === 'start') {
         stage = 'google_start'
         const result = z.object({ session_id: z.uuid(), auth_url: z.string().max(16000), expires_at: z.iso.datetime({ offset: true }) })
@@ -119,17 +130,21 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       stage = 'google_status'
       // Instantly consumes success/error on the first read. The database lease
       // serializes this request and persists its result before replying to the UI.
+      const statusResponse = await request(`/oauth/session/status/${encodeURIComponent(context.remoteSession)}`)
+      // A partially changed response shape must not hide a known identity mismatch.
+      const identity = z.object({ status: z.literal('success'), email: z.unknown().optional(), account_id: z.unknown().optional() }).safeParse(statusResponse)
+      if (identity.success && ((typeof identity.data.email === 'string' && identity.data.email.toLowerCase() !== context.email)
+        || (typeof identity.data.account_id === 'string' && identity.data.account_id.includes('@') && identity.data.account_id.toLowerCase() !== context.email))) {
+        return { state: 'failed', failureCode: 'mailbox_mismatch' }
+      }
       const result = z.discriminatedUnion('status', [
         z.object({ status: z.literal('pending') }), z.object({ status: z.literal('expired') }), z.object({ status: z.literal('error') }),
         z.object({ status: z.literal('success'), email, account_id: email }),
-      ]).parse(await request(`/oauth/session/status/${encodeURIComponent(context.remoteSession)}`))
+      ]).parse(statusResponse)
       if (result.status === 'success') {
         if (result.email !== context.email || result.account_id !== context.email) return { state: 'failed', failureCode: 'mailbox_mismatch' }
         stage = 'account_check'
-        const account = z.object({ email, organization: z.uuid(), status: z.number(), setup_pending: z.boolean().optional() })
-          .parse(await request(`/accounts/${encodeURIComponent(context.email)}`))
-        if (account.email !== context.email || account.organization !== context.workspace || account.status !== 1 || account.setup_pending) return { state: 'failed', failureCode: 'account_not_ready' }
-        return { state: 'connected', remoteAccount: result.account_id }
+        return await confirmEmailAccount(context, request)
       }
       return { state: result.status === 'error' ? 'failed' : result.status }
     }
@@ -164,10 +179,25 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
     // Poll/PIN failures on HeyReach are safe to check again; Connect is never replayed.
     if (context.channel === 'linkedin' && action !== 'start') return { state: 'pending' }
     if (context.channel === 'email') {
+      // OAuth terminal results are consumed on read. An unreadable/lost result
+      // must never replay login or the session read. Independently confirm the
+      // reserved mailbox with one read-only request, using the already verified
+      // workspace and the same deadline. This records setup, not sending rights.
+      if (action === 'poll' && stage === 'google_status' && verifiedEmailRequest
+        && (!(error instanceof ProviderFailure) || error.state === 'uncertain')) {
+        try {
+          const account = await confirmEmailAccount(context, verifiedEmailRequest)
+          if (account.state === 'connected') {
+            console.warn('Email account connection reconciled', { action, stage })
+            return account
+          }
+        } catch { /* Without independent proof, retain the uncertain outcome. */ }
+      }
       const status = error instanceof ProviderFailure ? error.status : undefined
       const failureCode = (error instanceof ProviderFailure ? error.failureCode : undefined)
         ?? (status === 401 ? 'key_rejected' : status === 403 ? 'access_denied' : status === 429 ? 'rate_limited' : 'service_unavailable')
-      console.warn('Email account connection failed', { action, stage, status, failureCode })
+      const reason = error instanceof z.ZodError ? 'unexpected_response' : error instanceof ProviderFailure ? 'provider_response' : 'transport_error'
+      console.warn('Email account connection failed', { action, stage, status, failureCode, reason })
       return { state: error instanceof ProviderFailure ? error.state : 'uncertain', failureCode }
     }
     return { state: error instanceof ProviderFailure ? error.state : 'uncertain' }
