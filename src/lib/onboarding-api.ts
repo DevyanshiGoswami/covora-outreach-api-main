@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, connectAccount, googleAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
+import { checkConnectionWorkspace, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
 const workspaceOption = z.object({ id: z.string().regex(/^[a-z0-9-]{1,60}$/), label: z.string().min(1).max(100),
@@ -58,7 +58,7 @@ async function context(client: SupabaseClient<Database>) {
 }
 const connectionInput = z.union([
   z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: z.literal('email') }),
-  z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email') }),
+  z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']).optional() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), email,
     password: z.string().min(1).max(512), country: z.string().regex(/^[A-Z]{2}$/),
   }),
@@ -201,6 +201,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
           ...('pin' in value ? { pin: value.pin } : {}),
+          ...('provider' in value && value.provider ? { provider: value.provider } : {}),
         })
           : { state: 'failed', ...(scope.data.channel === 'email' ? { failureCode: 'key_rejected' as const } : {}) }
         failureCode = observation.failureCode
@@ -220,7 +221,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       if (!saved.data) throw new ApiError(500)
       return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at,
         ...(failureCode ? { failureCode } : {}),
-        authUrl: saved.data.state === 'pending' && saved.data.auth_url ? googleAuthorizationUrl(saved.data.auth_url) : null })
+        authUrl: saved.data.state === 'pending' && saved.data.auth_url ? emailAuthorizationUrl(saved.data.auth_url) : null })
     }),
   }
 }

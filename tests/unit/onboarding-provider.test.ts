@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { connectAccount, reviewEmailAccount, checkConnectionWorkspace, verifyConnectionWorkspace, googleAuthorizationUrl, type ConnectionContext } from '../../src/lib/onboarding-provider'
+import { connectAccount, reviewEmailAccount, checkConnectionWorkspace, verifyConnectionWorkspace, googleAuthorizationUrl, microsoftAuthorizationUrl, emailAuthorizationUrl, type ConnectionContext } from '../../src/lib/onboarding-provider'
 
 const workspace = '00000000-0000-4000-8000-000000000001'
 const sessionId = '00000000-0000-4000-8000-000000000002'
@@ -16,6 +16,27 @@ test('Google initialization only accepts a Google authorization URL and verifies
   assert.equal(result.state, 'pending'); assert.equal(result.remoteSession, sessionId)
   assert.deepEqual(paths, ['/api/v2/workspaces/current', '/api/v2/oauth/google/init'])
   for (const url of ['https://accounts.google.com.evil.test/o/oauth2/auth?state=x', 'https://evil.test', 'javascript:alert(1)', 'https://accounts.google.com@evil.test', 'https://accounts.google.com/other?state=x']) assert.throws(() => googleAuthorizationUrl(url))
+})
+test('Microsoft initialization uses the Microsoft endpoint and only accepts a Microsoft authorization URL', async () => {
+  const paths: string[] = []
+  const authUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic&state=test'
+  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: workspace }, { session_id: sessionId, auth_url: authUrl, expires_at: new Date(Date.now()+600000).toISOString() }], url => {
+    paths.push(new URL(url).pathname)
+  }) }, { provider: 'microsoft' })
+  assert.deepEqual(result, { state: 'pending', remoteSession: sessionId, authUrl })
+  assert.deepEqual(paths, ['/api/v2/workspaces/current', '/api/v2/oauth/microsoft/init'])
+  for (const url of ['https://login.microsoftonline.com.evil.test/common/oauth2/v2.0/authorize?state=x', 'https://evil.test/common/oauth2/v2.0/authorize?state=x',
+    'https://login.microsoftonline.com@evil.test/common/oauth2/v2.0/authorize?state=x', 'http://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=x',
+    'https://login.microsoftonline.com/common/oauth2/v2.0/token?state=x', 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize']) assert.throws(() => microsoftAuthorizationUrl(url))
+})
+test('a sign-in link from the other provider is never handed to the person', async () => {
+  const google = 'https://accounts.google.com/o/oauth2/v2/auth?state=test'
+  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: workspace }, { session_id: sessionId, auth_url: google, expires_at: new Date(Date.now()+600000).toISOString() }]) }, { provider: 'microsoft' })
+  assert.equal(result.state, 'uncertain'); assert.equal('authUrl' in result ? result.authUrl : undefined, undefined)
+})
+test('saved sign-in links are accepted from Google or Microsoft only', () => {
+  for (const url of ['https://accounts.google.com/o/oauth2/v2/auth?state=a', 'https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?state=a']) assert.equal(emailAuthorizationUrl(url), url)
+  for (const url of ['https://evil.test/?state=a', 'https://accounts.google.com.evil.test/o/oauth2/auth?state=a']) assert.throws(() => emailAuthorizationUrl(url))
 })
 test('wrong workspace prevents OAuth initialization', async () => {
   assert.deepEqual(await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { state: 'failed', failureCode: 'workspace_mismatch' })

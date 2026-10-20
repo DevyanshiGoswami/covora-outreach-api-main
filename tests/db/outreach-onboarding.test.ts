@@ -112,6 +112,35 @@ test('Google API flow is idempotent, persists a consumed result, and does not en
   assert.equal((await admin.from('outreach_reply_senders').select('id').eq('client_id', tenant.client.id)).data!.length, 0)
   const body = await repeated.text(); for (const secret of ['synthetic', 'credential', 'remote_session', 'workspace']) assert.ok(!body.includes(secret))
 })
+test('Microsoft API flow returns a Microsoft sign-in link and connects the expected mailbox', async t => {
+  const tenant = await setup(t); const paths: string[] = []
+  const authUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic&state=test'
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname; paths.push(path)
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) return Response.json({ session_id: randomUUID(), auth_url: authUrl, expires_at: new Date(Date.now()+600000).toISOString() })
+    if (path.includes('/oauth/session/status/')) return Response.json({ status: 'success', email: tenant.user.email, account_id: tenant.user.email })
+    if (path.includes('/accounts/')) return Response.json({ email: tenant.user.email, organization: tenant.workspace, status: 1, setup_pending: false })
+    throw new Error('Unexpected provider path')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const started = await handlers.connection(await request(tenant.supabase, 'connections', start)); assert.equal(started.status, 200, await started.clone().text())
+  assert.deepEqual(await started.json().then(body => [body.state, body.authUrl]), ['pending', authUrl])
+  assert.ok(paths.some(path => path.endsWith('/oauth/microsoft/init'))); assert.ok(!paths.some(path => path.endsWith('/oauth/google/init')))
+  const saved = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).single(); assert.ifError(saved.error)
+  await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', saved.data!.id)
+  const completed = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'email' }))
+  assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json()).state, 'connected')
+})
+test('stored sign-in links must come from Google or Microsoft', async t => {
+  const tenant = await setup(t)
+  const started = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(started.error)
+  const claim = started.data![0]
+  const rejected = await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token, p_state: 'pending', p_auth_url: 'https://login.microsoftonline.com.evil.test/common/oauth2/v2.0/authorize?state=x' })
+  assert.equal(rejected.error?.code, '22023')
+  const accepted = await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token, p_state: 'pending', p_auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=x' })
+  assert.ifError(accepted.error); assert.equal(accepted.data, true)
+})
 test('connection leases fence concurrent consumption, revoked authority and lost responses', async t => {
   const tenant = await setup(t)
   const begin = { p_person: tenant.person, p_channel: 'email', p_action: 'start' }

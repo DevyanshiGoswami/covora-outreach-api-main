@@ -11,6 +11,7 @@ export type ConnectionContext = {
   remoteSession: string | null; remoteAccount: string | null
 }
 export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number }
+export type EmailProvider = 'google' | 'microsoft'
 class ProviderFailure extends Error {
   constructor(readonly state: 'failed' | 'uncertain', readonly status?: number, readonly failureCode?: ConnectionFailureCode) { super('Connection unavailable') }
 }
@@ -23,6 +24,18 @@ export function googleAuthorizationUrl(value: string): string {
   if (url.protocol !== 'https:' || url.hostname !== 'accounts.google.com' || url.port || url.username || url.password
     || !['/o/oauth2/auth', '/o/oauth2/v2/auth'].includes(url.pathname) || !url.searchParams.get('state')) throw new ProviderFailure('uncertain')
   return url.href
+}
+
+export function microsoftAuthorizationUrl(value: string): string {
+  const url = new URL(value)
+  if (url.protocol !== 'https:' || url.hostname !== 'login.microsoftonline.com' || url.port || url.username || url.password
+    || !/^\/[A-Za-z0-9.-]+\/oauth2\/(v2\.0\/)?authorize$/.test(url.pathname) || !url.searchParams.get('state')) throw new ProviderFailure('uncertain')
+  return url.href
+}
+
+/** Saved sign-in links are rechecked against the provider they claim to come from. */
+export function emailAuthorizationUrl(value: string): string {
+  return new URL(value).hostname === 'login.microsoftonline.com' ? microsoftAuthorizationUrl(value) : googleAuthorizationUrl(value)
 }
 
 async function readProviderJson(response: Response): Promise<unknown> {
@@ -132,7 +145,7 @@ export async function reviewEmailAccount(context: ConnectionContext, options: Pr
 }
 
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
-  input: { password?: string; country?: string; pin?: string } = {}): Promise<ConnectionResult> {
+  input: { password?: string; country?: string; pin?: string; provider?: EmailProvider } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'
   let verifiedEmailRequest: ReturnType<typeof transport> | undefined
   try {
@@ -142,11 +155,13 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       if (workspace.id !== context.workspace) return { state: 'failed', failureCode: 'workspace_mismatch' }
       verifiedEmailRequest = request
       if (action === 'start') {
-        stage = 'google_start'
+        const provider = input.provider ?? 'google'
+        stage = `${provider}_start`
         const result = z.object({ session_id: z.uuid(), auth_url: z.string().max(16000), expires_at: z.iso.datetime({ offset: true }) })
-          .parse(await request('/oauth/google/init', {}))
+          .parse(await request(`/oauth/${provider}/init`, {}))
         if (Date.parse(result.expires_at) <= Date.now()) return { state: 'expired' }
-        return { state: 'pending', remoteSession: result.session_id, authUrl: googleAuthorizationUrl(result.auth_url) }
+        return { state: 'pending', remoteSession: result.session_id,
+          authUrl: provider === 'microsoft' ? microsoftAuthorizationUrl(result.auth_url) : googleAuthorizationUrl(result.auth_url) }
       }
       if (action !== 'poll' || !context.remoteSession || !z.uuid().safeParse(context.remoteSession).success) return { state: 'failed' }
       stage = 'google_status'
