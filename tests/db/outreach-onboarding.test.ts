@@ -274,6 +274,59 @@ test('review separates absence after expiry from absence during consent and unav
   const restart = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(restart.error); assert.ok(restart.data![0].claim_token)
 })
 
+test('rejected email initialization can be reviewed and retried without a consent wait', async t => {
+  const tenant = await setup(t); let initCalls = 0; let lookupStatus = 503
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) {
+      initCalls++
+      return initCalls === 1 ? Response.json({ message: 'Invalid scope. Required: accounts:create. Found: accounts:read' }, { status: 401 })
+        : Response.json({ session_id: randomUUID(), auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=test', expires_at: new Date(Date.now()+600000).toISOString() })
+    }
+    if (path.includes('/accounts/')) return Response.json({}, { status: lookupStatus })
+    throw new Error('Review must not poll or replay OAuth')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const rejected = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal(rejected.status, 200)
+  const failure = await rejected.json(); assert.equal(failure.state, 'failed'); assert.equal(failure.failureCode, 'account_create_required')
+  assert.ok(Date.parse(failure.expiresAt) > Date.now())
+  async function review() {
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', failure.connectionId)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' }))
+    assert.equal(response.status, 200); return response.json()
+  }
+  // A transport failure remains unverified even when the rejected attempt has
+  // no consent deadline. Never replace missing proof with a connected badge.
+  const unavailable = await review(); assert.equal(unavailable.state, 'uncertain'); assert.equal(unavailable.reviewStatus, 'unavailable')
+  assert.ok(Date.parse(unavailable.expiresAt) <= Date.now())
+  const blocked = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal((await blocked.json()).state, 'uncertain'); assert.equal(initCalls, 1)
+  lookupStatus = 404
+  const missing = await review(); assert.equal(missing.state, 'expired'); assert.equal(missing.reviewStatus, 'missing')
+  assert.equal(initCalls, 1)
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-31000).toISOString() }).eq('id', failure.connectionId)).error)
+  const retry = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal(retry.status, 200); assert.equal((await retry.json()).state, 'pending'); assert.equal(initCalls, 2)
+})
+
+test('a failed attempt with a recorded sign-in session keeps its original deadline', async t => {
+  const tenant = await setup(t)
+  const start = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(start.error)
+  const claim = start.data![0]
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token!, p_state: 'failed', p_remote_session: randomUUID() })).data, true)
+  const before = await admin.from('outreach_connections').select('expires_at').eq('id', claim.connection_id).single(); assert.ifError(before.error)
+  const handlers = createOnboardingHandlers(config(async url => new URL(String(url)).pathname.endsWith('/workspaces/current')
+    ? Response.json({ id: tenant.workspace }) : Response.json({}, { status: 404 })))
+  for (let i = 0; i < 2; i++) {
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', claim.connection_id)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' }))
+    assert.equal(response.status, 200)
+    const waiting = await response.json(); assert.equal(waiting.state, 'uncertain'); assert.equal(waiting.reviewStatus, 'waiting'); assert.equal(waiting.expiresAt, before.data!.expires_at)
+  }
+})
+
 test('review enforces self and tenant permissions, fences concurrent/revoked/changed-workspace completions', async t => {
   const tenant = await uncertainEmail(t), owner = await createAdmin(t), other = await createAdmin(t)
   await grantOutreachOwner(owner.user.id)
