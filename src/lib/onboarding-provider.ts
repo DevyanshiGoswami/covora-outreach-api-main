@@ -1,14 +1,16 @@
 import 'server-only'
 import { z } from 'zod'
+import { linkedinCookies, linkedinProfileUrl, type LinkedInCookie } from './linkedin-session'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
 export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied'
 export type ConnectionResult = {
-  state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
+  state: ConnectionState; failureCode?: ConnectionFailureCode | 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_session_rejected'; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
 }
 export type ConnectionContext = {
   channel: 'email' | 'linkedin'; email: string; workspace: string; credential: string
   remoteSession: string | null; remoteAccount: string | null
+  expectedProfileUrl?: string | null
 }
 export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number }
 export type EmailProvider = 'google' | 'microsoft'
@@ -145,7 +147,7 @@ export async function reviewEmailAccount(context: ConnectionContext, options: Pr
 }
 
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
-  input: { password?: string; country?: string; pin?: string; provider?: EmailProvider } = {}): Promise<ConnectionResult> {
+  input: { password?: string; country?: string; pin?: string; provider?: EmailProvider; cookies?: LinkedInCookie[]; userAgent?: string } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'
   let verifiedEmailRequest: ReturnType<typeof transport> | undefined
   try {
@@ -193,6 +195,14 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       return { state: result.status }
     }
     if (action === 'start') {
+      if (input.cookies) {
+        if (!input.country || !input.userAgent || !context.expectedProfileUrl) return { state: 'failed' }
+        const cookies = linkedinCookies.parse(input.cookies)
+        const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/ConnectWithCookies', {
+          cookies, proxyCountryCode: input.country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent,
+        }))
+        return { state: 'pending', remoteAccount: result.linkedInAccountId }
+      }
       if (!input.password || !input.country) return { state: 'failed' }
       const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/Connect', {
         username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: input.country, inboxScrapeMode: 'HeyReachOnly',
@@ -212,6 +222,11 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
     if (result.status === 'Connected' && !result.failureReason && result.profile) {
       const url = new URL(result.profile.profileUrl)
       if (url.protocol !== 'https:' || !['www.linkedin.com', 'linkedin.com'].includes(url.hostname) || !url.pathname.startsWith('/in/') || url.username || url.password || url.port) return { state: 'failed' }
+      if (context.expectedProfileUrl) {
+        const profile = linkedinProfileUrl(url.href)
+        if (profile !== context.expectedProfileUrl) return { state: 'failed', failureCode: 'linkedin_profile_mismatch' }
+        return { state: 'connected', remoteAccount: id, address: profile }
+      }
       return { state: 'connected', remoteAccount: id, address: url.href }
     }
     if (result.failureReason || result.status === 'Disconnected') return { state: 'failed' }
@@ -244,6 +259,9 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       console.warn('Email account connection failed', { action, stage, status, failureCode, reason })
       return { state: error instanceof ProviderFailure ? error.state : 'uncertain', failureCode }
     }
-    return { state: error instanceof ProviderFailure ? error.state : 'uncertain' }
+    const status = error instanceof ProviderFailure ? error.status : undefined
+    return { state: error instanceof ProviderFailure ? error.state : 'uncertain',
+      ...([401, 403].includes(status ?? 0) ? { failureCode: 'linkedin_access_denied' as const }
+        : input.cookies && [400, 422].includes(status ?? 0) ? { failureCode: 'linkedin_session_rejected' as const } : {}) }
   }
 }

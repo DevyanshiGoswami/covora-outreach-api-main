@@ -377,3 +377,67 @@ test('Microsoft selection preserves tenant, role and input authorization before 
   assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', { ...start, action: 'poll' }))).status, 400)
   assert.equal(calls, 0)
 })
+
+const sessionCookies = [{name:'li_at',value:'synthetic-cookie-secret',domain:'.linkedin.com',path:'/'},{name:'JSESSIONID',value:'synthetic-jsession-secret',domain:'.linkedin.com',path:'/'}]
+async function cookieSetup(t: Parameters<typeof createTenant>[0]) {
+  const tenant=await setup(t)
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({client_id:tenant.client.id,channel:'linkedin',credential_ref:'OUTREACH_HEYREACH_TEST',remote_workspace_id:randomUUID(),enabled:true})).error)
+  return tenant
+}
+function cookieBody(personId:string,email:string) {return {action:'start',channel:'linkedin',personId,email,method:'cookies',cookies:sessionCookies,country:'US',profileUrl:'https://www.linkedin.com/in/test-person',userAgent:'Synthetic Chrome'}}
+
+test('cookie API persists only the expected public profile, prevents duplicate starts and verifies completion',async t=>{
+  const tenant=await cookieSetup(t);let starts=0
+  const h=createOnboardingHandlers(config(async(input,init)=>{
+    if(String(input).endsWith('/ConnectWithCookies')){starts++;const body=JSON.parse(String(init?.body));assert.deepEqual(body.cookies,sessionCookies);assert.equal(body.password,undefined);return Response.json({linkedInAccountId:4321})}
+    return Response.json({accountId:4321,status:'Connected',profile:{profileUrl:'https://linkedin.com/in/Test-Person/'}})
+  }))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  const first=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(first.status,200);assert.equal((await first.json()).state,'pending')
+  const repeated=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(repeated.status,200);assert.equal(starts,1)
+  const saved=await admin.from('outreach_connections').select('*').eq('person_id',tenant.person).single();assert.ifError(saved.error);assert.equal(saved.data?.expected_profile_url,body.profileUrl)
+  assert.ok(!JSON.stringify(saved.data).includes('synthetic-cookie-secret'))
+  await admin.from('outreach_connections').update({next_poll_at:null}).eq('person_id',tenant.person)
+  const complete=await h.connection(await request(tenant.supabase,'connections',{action:'poll',channel:'linkedin',personId:tenant.person}));assert.equal(complete.status,200);assert.equal((await complete.json()).state,'connected')
+  const sender=await admin.from('outreach_reply_senders').select('sender_address,enabled').eq('client_id',tenant.client.id).single();assert.ifError(sender.error);assert.equal(sender.data?.sender_address,body.profileUrl);assert.equal(sender.data?.enabled,false)
+  const people=await h.people(await request(tenant.supabase,`people?clientId=${tenant.client.id}`));const text=await people.text();assert.ok(!text.includes('synthetic-cookie-secret'));assert.ok(!text.includes('expected_profile_url'))
+})
+
+test('cookie starts deny foreign tenants, viewers and malformed input before provider calls',async t=>{
+  const tenant=await cookieSetup(t),other=await createTenant(t,{features:['outreach_app']});let calls=0
+  await grantOutreachMembership(other.user.id,other.client.id)
+  const h=createOnboardingHandlers(config(async()=>{calls++;return Response.json({linkedInAccountId:4322})}))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  assert.equal((await h.connection(await request(other.supabase,'connections',body))).status,403)
+  await grantOutreachMembership(tenant.user.id,tenant.client.id,'client_viewer')
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',body))).status,403)
+  await grantOutreachMembership(tenant.user.id,tenant.client.id,'client_admin')
+  for(const change of [{cookies:[]},{cookies:[{...sessionCookies[0],domain:'.example.test'},sessionCookies[1]]},{profileUrl:'https://evil.test/in/user'},{password:'not-allowed'},{userAgent:'x'.repeat(513)}]){
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',{...body,...change}))).status,400)
+  }
+  assert.equal(calls,0)
+  assert.equal((await anonClient().rpc('prepare_outreach_linkedin_cookies',{p_person:tenant.person,p_email:tenant.user.email,p_profile:body.profileUrl})).error?.code,'42501')
+})
+
+test('cookie profile mismatch cannot grant a sender; SQL independently fences completion',async t=>{
+  const tenant=await cookieSetup(t)
+  const h=createOnboardingHandlers(config(async input=>Response.json(String(input).endsWith('/ConnectWithCookies')?{linkedInAccountId:4323}:{accountId:4323,status:'Connected',profile:{profileUrl:'https://www.linkedin.com/in/wrong-person'}})))
+  const start=await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)));assert.equal(start.status,200)
+  await admin.from('outreach_connections').update({next_poll_at:null}).eq('person_id',tenant.person)
+  const poll=await h.connection(await request(tenant.supabase,'connections',{action:'poll',channel:'linkedin',personId:tenant.person}));assert.equal((await poll.json()).failureCode,'linkedin_profile_mismatch')
+  assert.deepEqual((await admin.from('outreach_reply_senders').select('id').eq('client_id',tenant.client.id)).data,[])
+  const added=await tenant.supabase.rpc('create_outreach_person',{p_client_id:tenant.client.id,p_name:'Second person',p_email:'second-cookie-person@example.test'});assert.ifError(added.error)
+  const claim=await tenant.supabase.rpc('prepare_outreach_linkedin_cookies',{p_person:added.data!,p_email:'second-cookie-person@example.test',p_profile:'https://www.linkedin.com/in/test-person'});assert.ifError(claim.error)
+  const c=claim.data![0];await admin.from('outreach_connections').update({remote_account:'4324'}).eq('id',c.connection_id)
+  const wrong=await admin.rpc('finish_outreach_connection',{p_id:c.connection_id,p_lease:c.claim_token!,p_state:'connected',p_remote_account:'4324',p_address:'https://www.linkedin.com/in/wrong-person'});assert.equal(wrong.error?.code,'22023')
+})
+
+test('lost cookie start stays uncertain and cannot be replayed or rebound to another profile',async t=>{
+  const tenant=await cookieSetup(t);let calls=0
+  const h=createOnboardingHandlers(config(async()=>{calls++;throw Error('synthetic-cookie-secret')}))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  const first=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(first.status,200);assert.equal((await first.json()).state,'uncertain')
+  const again=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(again.status,200);assert.equal((await again.json()).state,'uncertain');assert.equal(calls,1)
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',{...body,profileUrl:'https://www.linkedin.com/in/another-profile'}))).status,400)
+  assert.equal(calls,1)
+})

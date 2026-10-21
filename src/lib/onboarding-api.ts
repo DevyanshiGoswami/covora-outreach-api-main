@@ -7,6 +7,7 @@ import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, ty
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
 import { checkConnectionWorkspace, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
+import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
 const workspaceOption = z.object({ id: z.string().regex(/^[a-z0-9-]{1,60}$/), label: z.string().min(1).max(100),
@@ -57,6 +58,9 @@ async function context(client: SupabaseClient<Database>) {
   return portalContextSchema.parse(result.data)
 }
 const connectionInput = z.union([
+  z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), method: z.literal('cookies'), email,
+    cookies: linkedinCookies, country: z.string().regex(/^[A-Z]{2}$/), profileUrl: linkedinProfile,
+    userAgent: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/) }),
   z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: z.literal('email') }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']).optional() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), email,
@@ -67,6 +71,7 @@ const connectionInput = z.union([
 ])
 const privateContext = z.object({ channel: channelSchema, email, workspace: z.string(), credential: z.string(),
   remoteSession: z.string().nullable(), remoteAccount: z.string().nullable(),
+  expectedProfileUrl: z.string().nullable().optional(),
 })
 
 export function createOnboardingHandlers(config?: OnboardingApiConfig) {
@@ -186,8 +191,10 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
           reviewStatus: outcome === 'missing' ? (saved.data.state === 'expired' ? 'missing' : 'waiting') : outcome ?? 'checking',
           ...(failureCode ? { failureCode } : {}) })
       }
-      const prepared = await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: value.action,
-        ...('email' in value ? { p_email: value.email } : {}) })
+      const prepared = 'method' in value && value.method === 'cookies'
+        ? await client.rpc('prepare_outreach_linkedin_cookies', { p_person: value.personId, p_email: value.email, p_profile: value.profileUrl })
+        : await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: value.action,
+          ...('email' in value ? { p_email: value.email } : {}) })
       checkDatabaseError(prepared.error)
       const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
       const admin = service(config)
@@ -200,6 +207,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         const key = await credential(scope.data.credential, config)
         const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
+          ...('cookies' in value ? { cookies: value.cookies, country: value.country, userAgent: value.userAgent } : {}),
           ...('pin' in value ? { pin: value.pin } : {}),
           ...('provider' in value && value.provider ? { provider: value.provider } : {}),
         })

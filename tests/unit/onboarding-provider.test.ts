@@ -205,3 +205,30 @@ test('terminal OAuth errors provide fixed codes without exposing arbitrary servi
     assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'error', error, error_description: 'sensitive details' }]) }), { state: 'failed', failureCode })
   }
 })
+
+test('cookie connection sends only a validated session and records no cookie values in the result', async () => {
+  const cookies = [{name:'li_at' as const,value:'synthetic-session',domain:'.linkedin.com' as const,path:'/' as const}, {name:'JSESSIONID' as const,value:'"ajax:synthetic"',domain:'.linkedin.com' as const,path:'/' as const}]
+  const scope = {...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/test-person'}
+  const result = await connectAccount(scope,'start',{key:'synthetic',fetch:transport([{linkedInAccountId:321}],(url,init)=>{
+    assert.equal(url,'https://api.heyreach.io/api/public/li_account/ConnectWithCookies')
+    assert.deepEqual(JSON.parse(String(init?.body)),{cookies,proxyCountryCode:'US',inboxScrapeMode:'HeyReachOnly',userAgent:'Synthetic Chrome'})
+  })},{cookies,country:'US',userAgent:'Synthetic Chrome'})
+  assert.deepEqual(result,{state:'pending',remoteAccount:'321'})
+  for(const value of cookies.map(c=>c.value))assert.ok(!JSON.stringify(result).includes(value))
+})
+
+test('cookie polling verifies the expected profile and retains uncertainty on a lost start', async t => {
+  const scope={...context,channel:'linkedin' as const,remoteAccount:'321',expectedProfileUrl:'https://www.linkedin.com/in/test-person'}
+  for(const [profileUrl,matched] of [['https://linkedin.com/in/Test-Person/?trk=test',true],['https://www.linkedin.com/in/other-person',false]] as const){
+    const result=await connectAccount(scope,'poll',{key:'synthetic',fetch:transport([{accountId:321,status:'Connected',profile:{profileUrl}}])})
+    assert.deepEqual(result,matched?{state:'connected',remoteAccount:'321',address:scope.expectedProfileUrl}:{state:'failed',failureCode:'linkedin_profile_mismatch'})
+  }
+  const cookies=[{name:'li_at' as const,value:'synthetic-cookie-secret',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'synthetic-other-secret',domain:'.linkedin.com' as const,path:'/' as const}]
+  const log=t.mock.method(console,'warn',()=>{})
+  for(const [status,expected] of [[403,{state:'failed',failureCode:'linkedin_access_denied'}],[400,{state:'failed',failureCode:'linkedin_session_rejected'}],[502,{state:'uncertain'}]] as const){
+    assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:transport([new Response('synthetic-cookie-secret',{status})])},{cookies,country:'US',userAgent:'Synthetic Chrome'}),expected)
+  }
+  let calls=0
+  assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:async()=>{calls++;throw Error('synthetic-cookie-secret')}},{cookies,country:'US',userAgent:'Synthetic Chrome'}),{state:'uncertain'})
+  assert.equal(calls,1);assert.ok(!JSON.stringify(log.mock.calls).includes('synthetic-cookie-secret'))
+})
