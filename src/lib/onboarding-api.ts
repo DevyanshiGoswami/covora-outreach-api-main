@@ -195,6 +195,16 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         ? await client.rpc('prepare_outreach_linkedin_cookies', { p_person: value.personId, p_email: value.email, p_profile: value.profileUrl })
         : await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: value.action,
           ...('email' in value ? { p_email: value.email } : {}) })
+      if (prepared.error?.code === '22023') {
+        const failures: Record<string, string> = {
+          'Connection retry too soon': 'connection_retry_later',
+          'Wait before starting another connection': 'connection_retry_later',
+          'LinkedIn identity requires review': 'linkedin_identity_locked',
+          'Connection identity reserved': 'connection_identity_reserved',
+        }
+        const failureCode = Object.hasOwn(failures, prepared.error.message) ? failures[prepared.error.message] : undefined
+        if (failureCode) return json({ error: 'Connection request rejected.', failureCode }, 400)
+      }
       checkDatabaseError(prepared.error)
       const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
       const admin = service(config)

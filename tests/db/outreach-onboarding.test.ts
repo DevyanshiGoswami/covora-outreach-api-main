@@ -14,10 +14,9 @@ function config(providerFetch: typeof fetch = async () => { throw new Error('Une
   return { url: env.URL, anonKey: env.ANON, serviceKey: env.SERVICE, fetch, providerFetch,
     credentials: { OUTREACH_INSTANTLY_TEST: 'synthetic', OUTREACH_HEYREACH_TEST: 'synthetic' } }
 }
-async function setup(t: Parameters<typeof createTenant>[0]) {
+async function setup(t: Parameters<typeof createTenant>[0], workspace: string = randomUUID()) {
   const tenant = await createTenant(t, { features: ['outreach_app'] })
   await grantOutreachMembership(tenant.user.id, tenant.client.id)
-  const workspace = randomUUID()
   assert.ifError((await admin.from('outreach_account_workspaces').insert({ client_id: tenant.client.id, credential_ref: 'OUTREACH_INSTANTLY_TEST', remote_workspace_id: workspace, enabled: true })).error)
   const person = await tenant.supabase.rpc('create_outreach_person', { p_client_id: tenant.client.id, p_name: 'Test person', p_email: tenant.user.email })
   assert.ifError(person.error)
@@ -379,10 +378,11 @@ test('Microsoft selection preserves tenant, role and input authorization before 
 })
 
 const sessionCookies = [{name:'li_at',value:'synthetic-cookie-secret',domain:'.linkedin.com',path:'/'},{name:'JSESSIONID',value:'synthetic-jsession-secret',domain:'.linkedin.com',path:'/'}]
-async function cookieSetup(t: Parameters<typeof createTenant>[0]) {
-  const tenant=await setup(t)
-  assert.ifError((await admin.from('outreach_reply_workspaces').insert({client_id:tenant.client.id,channel:'linkedin',credential_ref:'OUTREACH_HEYREACH_TEST',remote_workspace_id:randomUUID(),enabled:true})).error)
-  return tenant
+async function cookieSetup(t: Parameters<typeof createTenant>[0], shared?: {workspace:string;linkedinWorkspace:string}) {
+  const tenant=await setup(t, shared?.workspace)
+  const linkedinWorkspace=shared?.linkedinWorkspace ?? randomUUID()
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({client_id:tenant.client.id,channel:'linkedin',credential_ref:'OUTREACH_HEYREACH_TEST',remote_workspace_id:linkedinWorkspace,enabled:true})).error)
+  return {...tenant,linkedinWorkspace}
 }
 function cookieBody(personId:string,email:string) {return {action:'start',channel:'linkedin',personId,email,method:'cookies',cookies:sessionCookies,country:'US',profileUrl:'https://www.linkedin.com/in/test-person',userAgent:'Synthetic Chrome'}}
 
@@ -440,4 +440,65 @@ test('lost cookie start stays uncertain and cannot be replayed or rebound to ano
   const again=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(again.status,200);assert.equal((await again.json()).state,'uncertain');assert.equal(calls,1)
   assert.equal((await h.connection(await request(tenant.supabase,'connections',{...body,profileUrl:'https://www.linkedin.com/in/another-profile'}))).status,400)
   assert.equal(calls,1)
+})
+
+test('a rejected LinkedIn start allows correcting its email after cooldown, then keeps one reserved identity', async t => {
+  const tenant = await cookieSetup(t); let calls = 0
+  const h = createOnboardingHandlers(config(async () => ++calls === 1 ? new Response(null, { status: 403 }) : Response.json({ linkedInAccountId: 98001 })))
+  const first = await h.connection(await request(tenant.supabase, 'connections', cookieBody(tenant.person, tenant.user.email)))
+  assert.equal(first.status, 200); assert.equal((await first.json()).state, 'failed')
+  const corrected = `corrected-${randomUUID()}@example.test`
+  const body = cookieBody(tenant.person, corrected)
+  const tooSoon = await h.connection(await request(tenant.supabase, 'connections', body))
+  assert.equal(tooSoon.status, 400); assert.equal((await tooSoon.json()).failureCode, 'connection_retry_later'); assert.equal(calls, 1)
+  assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  const retries = await Promise.all([h.connection(await request(tenant.supabase,'connections',body)), h.connection(await request(tenant.supabase,'connections',body))])
+  for (const retry of retries) { assert.equal(retry.status,200); assert.ok(['starting','pending'].includes((await retry.json()).state)) }
+  assert.equal(calls,2)
+  const reservation = await admin.from('outreach_connection_reservations').select('email').eq('person_id',tenant.person).eq('channel','linkedin').single()
+  assert.ifError(reservation.error); assert.equal(reservation.data?.email,corrected)
+  const history = await admin.from('outreach_connections').select('expected_email,state').eq('person_id',tenant.person).order('created_at')
+  assert.deepEqual(history.data,[{expected_email:tenant.user.email,state:'failed'},{expected_email:corrected,state:'pending'}])
+})
+
+test('LinkedIn email correction cannot steal another person reservation and rolls back without calling the provider', async t => {
+  const first = await cookieSetup(t), other = await cookieSetup(t, first); let calls = 0
+  const h = createOnboardingHandlers(config(async () => { calls++; return new Response(null,{status:403}) }))
+  for (const tenant of [first,other]) {
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)))).status,200)
+    assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  }
+  const denied = await h.connection(await request(first.supabase,'connections',cookieBody(first.person,other.user.email)))
+  assert.equal(denied.status,400); assert.equal((await denied.json()).failureCode,'connection_identity_reserved'); assert.equal(calls,2)
+  const saved = await admin.from('outreach_connection_reservations').select('email').eq('person_id',first.person).single()
+  assert.equal(saved.data?.email,first.user.email)
+})
+
+test('remote, expired and uncertain LinkedIn attempts keep their login reservation when the email changes', async t => {
+  for (const state of ['pending','uncertain','expired','failed'] as const) {
+    const tenant = await cookieSetup(t); let calls = 0
+    const h = createOnboardingHandlers(config(async () => { calls++; return state === 'uncertain' ? new Response(null,{status:502}) : Response.json({linkedInAccountId:98002}) }))
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)))).status,200)
+    assert.ifError((await admin.from('outreach_connections').update({state,created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+    const denied = await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,`changed-${randomUUID()}@example.test`)))
+    assert.equal(denied.status,400); assert.equal((await denied.json()).failureCode,'linkedin_identity_locked'); assert.equal(calls,1)
+    const saved = await admin.from('outreach_connection_reservations').select('email').eq('person_id',tenant.person).single()
+    assert.equal(saved.data?.email,tenant.user.email)
+    await tenant.cleanup()
+  }
+})
+
+test('password connection can correct an unused LinkedIn login reservation through the same guarded path', async t => {
+  const tenant = await cookieSetup(t); let calls = 0
+  const h = createOnboardingHandlers(config(async (_url,init) => {
+    calls++
+    if(calls===1)return new Response(null,{status:403})
+    assert.equal(JSON.parse(String(init?.body)).username,`linkedin-${tenant.user.email}`)
+    return Response.json({linkedInAccountId:98003})
+  }))
+  const body={action:'start',channel:'linkedin',personId:tenant.person,email:tenant.user.email,password:'synthetic-password',country:'US'}
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',body))).status,200)
+  assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  const retry=await h.connection(await request(tenant.supabase,'connections',{...body,email:`linkedin-${tenant.user.email}`}))
+  assert.equal(retry.status,200);assert.equal((await retry.json()).state,'pending');assert.equal(calls,2)
 })

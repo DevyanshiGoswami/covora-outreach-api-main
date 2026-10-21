@@ -232,3 +232,14 @@ test('cookie polling verifies the expected profile and retains uncertainty on a 
   assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:async()=>{calls++;throw Error('synthetic-cookie-secret')}},{cookies,country:'US',userAgent:'Synthetic Chrome'}),{state:'uncertain'})
   assert.equal(calls,1);assert.ok(!JSON.stringify(log.mock.calls).includes('synthetic-cookie-secret'))
 })
+
+test('LinkedIn failure diagnostics contain fixed metadata without request or response secrets', async t => {
+  const log=t.mock.method(console,'warn',()=>{})
+  const scope={...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/synthetic'}
+  const cookies=[{name:'li_at' as const,value:'private-cookie',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'private-session',domain:'.linkedin.com' as const,path:'/' as const}]
+  const result=await connectAccount(scope,'start',{key:'private-key',fetch:transport([new Response('private-response',{status:403})])},{cookies,country:'US',userAgent:'private-user-agent'})
+  assert.equal(result.failureCode,'linkedin_access_denied')
+  const logs=JSON.stringify(log.mock.calls.map(call=>call.arguments))
+  assert.match(logs,/403/); assert.match(logs,/cookies/)
+  for(const secret of ['private-cookie','private-session','private-key','private-response','private-user-agent',context.email])assert.ok(!logs.includes(secret))
+})

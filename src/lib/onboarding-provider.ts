@@ -236,6 +236,12 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
   } catch (error) {
     // Never return/log provider text, password, PIN, key or transport diagnostics.
     // Poll/PIN failures on HeyReach are safe to check again; Connect is never replayed.
+    if (context.channel === 'linkedin') {
+      console.warn('LinkedIn account connection failed', { action,
+        method: action === 'start' ? input.cookies ? 'cookies' : 'password' : undefined,
+        status: error instanceof ProviderFailure ? error.status : undefined,
+        reason: error instanceof z.ZodError ? 'unexpected_response' : error instanceof ProviderFailure ? 'provider_response' : 'transport_error' })
+    }
     if (context.channel === 'linkedin' && action !== 'start') return { state: 'pending' }
     if (context.channel === 'email') {
       // OAuth terminal results are consumed on read. An unreadable/lost result
