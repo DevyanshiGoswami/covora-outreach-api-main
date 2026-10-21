@@ -2,7 +2,7 @@ import 'server-only'
 import { z } from 'zod'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
-export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready'
+export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied'
 export type ConnectionResult = {
   state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
 }
@@ -149,6 +149,11 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
   let stage = 'workspace_check'
   let verifiedEmailRequest: ReturnType<typeof transport> | undefined
   try {
+    // The authorized person supplies the expected identity, never browser input.
+    // Personal Gmail cannot use this service's Google Workspace OAuth route.
+    if (context.channel === 'email' && action === 'start' && /@(gmail|googlemail)\.com$/i.test(context.email)) {
+      return { state: 'failed', failureCode: 'personal_gmail_unsupported' }
+    }
     const request = transport(context.channel, options)
     if (context.channel === 'email') {
       const workspace = z.object({ id: z.uuid() }).parse(await request('/workspaces/current'))
@@ -164,7 +169,7 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
           authUrl: provider === 'microsoft' ? microsoftAuthorizationUrl(result.auth_url) : googleAuthorizationUrl(result.auth_url) }
       }
       if (action !== 'poll' || !context.remoteSession || !z.uuid().safeParse(context.remoteSession).success) return { state: 'failed' }
-      stage = 'google_status'
+      stage = 'email_status'
       // Instantly consumes success/error on the first read. The database lease
       // serializes this request and persists its result before replying to the UI.
       const statusResponse = await request(`/oauth/session/status/${encodeURIComponent(context.remoteSession)}`)
@@ -175,7 +180,7 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         return { state: 'failed', failureCode: 'mailbox_mismatch' }
       }
       const result = z.discriminatedUnion('status', [
-        z.object({ status: z.literal('pending') }), z.object({ status: z.literal('expired') }), z.object({ status: z.literal('error') }),
+        z.object({ status: z.literal('pending') }), z.object({ status: z.literal('expired') }), z.object({ status: z.literal('error'), error: z.string().optional() }),
         z.object({ status: z.literal('success'), email, account_id: email }),
       ]).parse(statusResponse)
       if (result.status === 'success') {
@@ -183,7 +188,9 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         stage = 'account_check'
         return await confirmEmailAccount(context, request)
       }
-      return { state: result.status === 'error' ? 'failed' : result.status }
+      if (result.status === 'error') return { state: 'failed', failureCode: result.error === 'account_exists' ? 'account_already_assigned'
+        : result.error === 'access_denied' ? 'consent_denied' : 'sign_in_rejected' }
+      return { state: result.status }
     }
     if (action === 'start') {
       if (!input.password || !input.country) return { state: 'failed' }
@@ -220,7 +227,7 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       // must never replay login or the session read. Independently confirm the
       // reserved mailbox with one read-only request, using the already verified
       // workspace and the same deadline. This records setup, not sending rights.
-      if (action === 'poll' && stage === 'google_status' && verifiedEmailRequest
+      if (action === 'poll' && stage === 'email_status' && verifiedEmailRequest
         && (!(error instanceof ProviderFailure) || error.state === 'uncertain')) {
         try {
           const account = await confirmEmailAccount(context, verifiedEmailRequest)

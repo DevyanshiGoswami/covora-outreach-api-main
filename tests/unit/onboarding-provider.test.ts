@@ -192,3 +192,16 @@ test('explicit review only reads workspace and reserved mailbox; missing differs
   assert.equal((await reviewEmailAccount(context, { key: 'synthetic', fetch: transport([Response.json({}, { status: 404 })]) })).outcome, 'unavailable')
   assert.deepEqual(await reviewEmailAccount(context, { key: 'synthetic', fetch: transport([{ id: sessionId }]) }), { outcome: 'unavailable', failureCode: 'workspace_mismatch' })
 })
+
+test('personal Gmail never initializes OAuth, even when Microsoft was selected', async () => {
+  for (const provider of ['google', 'microsoft'] as const) for (const address of ['person@gmail.com', 'person@googlemail.com']) {
+    let calls = 0
+    const result = await connectAccount({ ...context, email: address }, 'start', { key: 'synthetic', fetch: async () => { calls++; throw new Error('Must not call provider') } }, { provider })
+    assert.deepEqual(result, { state: 'failed', failureCode: 'personal_gmail_unsupported' }); assert.equal(calls, 0)
+  }
+})
+test('terminal OAuth errors provide fixed codes without exposing arbitrary service text', async () => {
+  for (const [error, failureCode] of [['account_exists', 'account_already_assigned'], ['access_denied', 'consent_denied'], ['private service error', 'sign_in_rejected']] as const) {
+    assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'error', error, error_description: 'sensitive details' }]) }), { state: 'failed', failureCode })
+  }
+})

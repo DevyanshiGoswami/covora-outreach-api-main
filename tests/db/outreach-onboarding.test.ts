@@ -295,3 +295,32 @@ test('review enforces self and tenant permissions, fences concurrent/revoked/cha
   assert.equal((await tenant.supabase.rpc('prepare_outreach_email_review', args)).error?.code, '42501')
   assert.equal((await admin.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: renewed.data![0].claim_token!, p_outcome: 'connected' })).data, false)
 })
+
+test('Microsoft pending sign-in is resumed without a second initialization or provider switch', async t => {
+  const tenant = await setup(t); let calls = 0
+  const url = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=synthetic'
+  const handlers = createOnboardingHandlers(config(async input => {
+    const path = new URL(String(input)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) { calls++; return Response.json({ session_id: randomUUID(), auth_url: url, expires_at: new Date(Date.now()+600000).toISOString() }) }
+    throw new Error('Must not start another provider or consume status early')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const first = await handlers.connection(await request(tenant.supabase, 'connections', start)); assert.equal(first.status, 200)
+  const repeated = await handlers.connection(await request(tenant.supabase, 'connections', { ...start, provider: 'google' })); assert.equal(repeated.status, 200)
+  assert.equal((await repeated.json()).authUrl, url); assert.equal(calls, 1)
+  const resumed = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', channel: 'email', personId: tenant.person }))
+  assert.equal(resumed.status, 200); assert.equal((await resumed.json()).authUrl, url); assert.equal(calls, 1)
+})
+test('Microsoft selection preserves tenant, role and input authorization before provider calls', async t => {
+  const tenant = await setup(t); const outsider = await createTenant(t, { features: ['outreach_app'] }); let calls = 0
+  await grantOutreachMembership(outsider.user.id, outsider.client.id)
+  const handlers = createOnboardingHandlers(config(async () => { calls++; throw new Error('No provider calls allowed') }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  assert.equal((await handlers.connection(await request(outsider.supabase, 'connections', start))).status, 403)
+  await grantOutreachMembership(tenant.user.id, tenant.client.id, 'client_viewer')
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', start))).status, 403)
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', { ...start, provider: 'other' }))).status, 400)
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', { ...start, action: 'poll' }))).status, 400)
+  assert.equal(calls, 0)
+})
