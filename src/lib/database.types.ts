@@ -195,6 +195,94 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_comment_commands": {
+                  Row: {
+                    "actor_user_id": string,"client_id": string,"command_id": string,"created_at": string,"kind": string,"payload_hash": string,"request_id": string
+                  }
+                  Insert: {
+                    "actor_user_id": string,"client_id": string,"command_id": string,"created_at"?: string,"kind": string,"payload_hash": string,"request_id": string
+                  }
+                  Update: {
+                    "actor_user_id"?: string,"client_id"?: string,"command_id"?: string,"created_at"?: string,"kind"?: string,"payload_hash"?: string,"request_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_comment_commands_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_comment_commands_request_id_client_id_fkey"
+      columns: ["request_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_comment_requests"
+      referencedColumns: ["id","client_id"]
+    }
+                  ]
+                },"outreach_comment_messages": {
+                  Row: {
+                    "author_name": string,"author_user_id": string | null,"body": string,"client_id": string,"created_at": string,"id": string,"request_id": string
+                  }
+                  Insert: {
+                    "author_name": string,"author_user_id"?: string | null,"body": string,"client_id": string,"created_at"?: string,"id"?: string,"request_id": string
+                  }
+                  Update: {
+                    "author_name"?: string,"author_user_id"?: string | null,"body"?: string,"client_id"?: string,"created_at"?: string,"id"?: string,"request_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_comment_messages_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_comment_messages_request_id_client_id_fkey"
+      columns: ["request_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_comment_requests"
+      referencedColumns: ["id","client_id"]
+    }
+                  ]
+                },"outreach_comment_requests": {
+                  Row: {
+                    "author_name": string,"author_user_id": string | null,"body": string,"client_id": string,"created_at": string,"id": string,"reply_count": number,"status": string,"title": string,"updated_at": string,"updated_by": string | null,"version": number
+                  }
+                  Insert: {
+                    "author_name": string,"author_user_id"?: string | null,"body": string,"client_id": string,"created_at"?: string,"id"?: string,"reply_count"?: number,"status"?: string,"title": string,"updated_at"?: string,"updated_by"?: string | null,"version"?: number
+                  }
+                  Update: {
+                    "author_name"?: string,"author_user_id"?: string | null,"body"?: string,"client_id"?: string,"created_at"?: string,"id"?: string,"reply_count"?: number,"status"?: string,"title"?: string,"updated_at"?: string,"updated_by"?: string | null,"version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_comment_requests_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"outreach_comment_settings": {
+                  Row: {
+                    "client_id": string,"enabled": boolean
+                  }
+                  Insert: {
+                    "client_id": string,"enabled"?: boolean
+                  }
+                  Update: {
+                    "client_id"?: string,"enabled"?: boolean
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_comment_settings_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: true
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_connection_reservations": {
                   Row: {
                     "channel": string,"email": string,"person_id": string
@@ -907,6 +995,9 @@ isOneToOne: false
 "create_outreach_client":
 { Args: { "p_id": string,"p_name": string }; Returns: string
                            },
+"create_outreach_comment":
+{ Args: { "p_body": string,"p_client": string,"p_command": string,"p_title": string }; Returns: string
+                           },
 "create_outreach_invitation":
 { Args: { "p_client_id": string,"p_email": string,"p_role": string }; Returns: {
               "expires_at": string,"invitation_id": string,"token": string
@@ -947,6 +1038,9 @@ isOneToOne: false
 "finish_outreach_reply":
 { Args: { "p_claim_token": string,"p_command_id": string,"p_error_code"?: string,"p_remote_message_id"?: string,"p_status": string }; Returns: boolean
                            },
+"get_outreach_comment":
+{ Args: { "p_client": string,"p_offset"?: number,"p_request": string }; Returns: Json
+                           },
 "inspect_outreach_invitation":
 { Args: { "p_token": string }; Returns: {
               "client_id": string,"client_name": string,"expires_at": string,"invitation_id": string,"role": string,"status": string
@@ -954,6 +1048,9 @@ isOneToOne: false
                            },
 "inspect_outreach_owner_invitation":
 { Args: { "p_token": string }; Returns: Json
+                           },
+"list_outreach_comments":
+{ Args: { "p_client": string,"p_offset"?: number,"p_status"?: string }; Returns: Json
                            },
 "list_outreach_conversations":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_channel"?: string,"p_client_id": string,"p_limit"?: number }; Returns: Json
@@ -1035,6 +1132,9 @@ isOneToOne: false
 "remove_outreach_integration":
 { Args: { "p_actor": string,"p_actor_version": number,"p_id": string,"p_version": number }; Returns: undefined
                            },
+"reply_outreach_comment":
+{ Args: { "p_body": string,"p_client": string,"p_command": string,"p_request": string }; Returns: string
+                           },
 "request_outreach_setup":
 { Args: { "p_channel": string,"p_client_id": string,"p_method": string }; Returns: string
                            },
@@ -1058,6 +1158,9 @@ isOneToOne: false
                            },
 "save_outreach_network_campaign":
 { Args: { "p_campaign_id": string,"p_name": string,"p_sender_ids": (string)[],"p_sender_versions": (number)[],"p_status": string,"p_totals": Json,"p_workspace_id": string,"p_workspace_version": number }; Returns: boolean
+                           },
+"set_outreach_comment_status":
+{ Args: { "p_client": string,"p_request": string,"p_status": string,"p_version": number }; Returns: undefined
                            },
 "sync_outreach_linkedin_conversation":
 { Args: { "p_campaign_id": string,"p_contact_address": string,"p_contact_name": string,"p_messages": Json,"p_remote_campaign_id": string,"p_remote_conversation_id": string,"p_sender_id": string,"p_sender_version": number,"p_subject": string,"p_workspace_version": number }; Returns: string

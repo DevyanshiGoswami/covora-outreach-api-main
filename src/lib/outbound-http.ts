@@ -22,13 +22,13 @@ export function checkDatabaseError(error: { code: string } | null): void {
   throw new ApiError(500)
 }
 
-/** Read at most 8 KiB even for chunked requests or a dishonest Content-Length. */
-export async function readJson(request: Request): Promise<unknown> {
+/** Bounded even for chunked bodies; individual endpoints may allow larger text. */
+export async function readJson(request: Request, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     throw new ApiError(400)
   }
   const length = request.headers.get('content-length')
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_BODY_BYTES)) {
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) {
     throw new ApiError(400)
   }
   if (!request.body) throw new ApiError(400)
@@ -41,7 +41,7 @@ export async function readJson(request: Request): Promise<unknown> {
       const { value, done } = await reader.read()
       if (done) break
       size += value.byteLength
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         await reader.cancel()
         throw new ApiError(400)
       }
