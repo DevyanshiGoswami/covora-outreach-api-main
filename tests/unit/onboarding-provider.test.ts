@@ -55,7 +55,7 @@ test('HeyReach Connect uses scoped transport and never requests personal inbox s
   const result = await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: transport([{ linkedInAccountId: 123 }], (url, init) => {
     assert.equal(url, 'https://api.heyreach.io/api/public/li_account/Connect')
     assert.equal(new Headers(init?.headers).get('X-API-KEY'), 'synthetic')
-    assert.deepEqual(JSON.parse(String(init?.body)), { username: context.email, password: 'fake-password', twoFactorAuthKey: '', proxyCountryCode: 'US', inboxScrapeMode: 'HeyReachOnly' })
+    assert.deepEqual(JSON.parse(String(init?.body)), { username: context.email, password: 'fake-password', twoFactorAuthKey: '', proxyCountryCode: 'us', inboxScrapeMode: 'HeyReachOnly' })
   }) }, { password: 'fake-password', country: 'US' })
   assert.deepEqual(result, { state: 'pending', remoteAccount: '123' }); assert.ok(!JSON.stringify(result).includes('fake-password'))
 })
@@ -211,7 +211,7 @@ test('cookie connection sends only a validated session and records no cookie val
   const scope = {...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/test-person'}
   const result = await connectAccount(scope,'start',{key:'synthetic',fetch:transport([{linkedInAccountId:321}],(url,init)=>{
     assert.equal(url,'https://api.heyreach.io/api/public/li_account/ConnectWithCookies')
-    assert.deepEqual(JSON.parse(String(init?.body)),{cookies,proxyCountryCode:'US',inboxScrapeMode:'HeyReachOnly',userAgent:'Synthetic Chrome'})
+    assert.deepEqual(JSON.parse(String(init?.body)),{cookies,proxyCountryCode:'us',inboxScrapeMode:'HeyReachOnly',userAgent:'Synthetic Chrome'})
   })},{cookies,country:'US',userAgent:'Synthetic Chrome'})
   assert.deepEqual(result,{state:'pending',remoteAccount:'321'})
   for(const value of cookies.map(c=>c.value))assert.ok(!JSON.stringify(result).includes(value))
@@ -225,7 +225,7 @@ test('cookie polling verifies the expected profile and retains uncertainty on a 
   }
   const cookies=[{name:'li_at' as const,value:'synthetic-cookie-secret',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'synthetic-other-secret',domain:'.linkedin.com' as const,path:'/' as const}]
   const log=t.mock.method(console,'warn',()=>{})
-  for(const [status,expected] of [[403,{state:'failed',failureCode:'linkedin_access_denied'}],[400,{state:'failed',failureCode:'linkedin_session_rejected'}],[502,{state:'uncertain'}]] as const){
+  for(const [status,expected] of [[403,{state:'failed',failureCode:'linkedin_access_denied'}],[400,{state:'failed',failureCode:'linkedin_request_rejected'}],[502,{state:'uncertain'}]] as const){
     assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:transport([new Response('synthetic-cookie-secret',{status})])},{cookies,country:'US',userAgent:'Synthetic Chrome'}),expected)
   }
   let calls=0
@@ -242,4 +242,37 @@ test('LinkedIn failure diagnostics contain fixed metadata without request or res
   const logs=JSON.stringify(log.mock.calls.map(call=>call.arguments))
   assert.match(logs,/403/); assert.match(logs,/cookies/)
   for(const secret of ['private-cookie','private-session','private-key','private-response','private-user-agent',context.email])assert.ok(!logs.includes(secret))
+})
+
+test('LinkedIn country codes match the live country catalog format for both sign-in methods', async () => {
+  const scope={...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/synthetic'}
+  const cookies=[{name:'li_at' as const,value:'synthetic-session',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'synthetic-csrf',domain:'.linkedin.com' as const,path:'/' as const}]
+  for(const method of ['cookies','password'])for(const country of ['US','IN','GB']){
+    const result=await connectAccount(scope,'start',{key:'synthetic',fetch:transport([{linkedInAccountId:87}],(_url,init)=>{
+      const body=JSON.parse(String(init?.body));assert.equal(body.proxyCountryCode,country.toLowerCase());assert.equal(body.customProxy,undefined)
+    })},{country,...(method==='cookies'?{cookies,userAgent:'Synthetic Chrome'}:{password:'synthetic-password'})})
+    assert.equal(result.state,'pending')
+  }
+})
+
+test('LinkedIn 400/422 separates location errors, expired sessions and unknown rejections without leaking text', async t => {
+  const log=t.mock.method(console,'warn',()=>{}),scope={...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/synthetic'}
+  const cookies=[{name:'li_at' as const,value:'private-cookie',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'private-session',domain:'.linkedin.com' as const,path:'/' as const}]
+  const cases: [string,string][]=[
+    ['No proxy available for this country: private-detail','linkedin_location_unavailable'],
+    [JSON.stringify({message:'Proxy country unavailable',request:{cookies:'private-cookie'}}),'linkedin_location_unavailable'],
+    [JSON.stringify({errors:{ProxyCountryCode:['Unsupported private-detail']}}),'linkedin_location_unavailable'],
+    ['Session cookies have expired: private-cookie','linkedin_session_rejected'],
+    [JSON.stringify({errorMessage:'Invalid cookies: private-cookie'}),'linkedin_session_rejected'],
+    [JSON.stringify({message:'Unknown rejection',request:{proxyCountryCode:'US'}}),'linkedin_request_rejected'],
+    ['private-cookie','linkedin_request_rejected'],
+    ['', 'linkedin_request_rejected'],
+    ['x'.repeat(16385), 'linkedin_request_rejected'],
+  ]
+  for(const status of [400,422])for(const [body,failureCode] of cases){
+    let calls=0
+    const result=await connectAccount(scope,'start',{key:'private-key',fetch:async()=>{calls++;return new Response(body,{status})}},{cookies,country:'US',userAgent:'Synthetic Chrome'})
+    assert.deepEqual(result,{state:'failed',failureCode});assert.equal(calls,1)
+  }
+  const logs=JSON.stringify(log.mock.calls.map(call=>call.arguments));for(const secret of ['private-cookie','private-session','private-key','private-detail',context.email])assert.ok(!logs.includes(secret))
 })

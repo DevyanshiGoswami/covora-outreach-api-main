@@ -3,9 +3,10 @@ import { z } from 'zod'
 import { linkedinCookies, linkedinProfileUrl, type LinkedInCookie } from './linkedin-session'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
-export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied'
+type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected'
+export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied' | LinkedInFailureCode
 export type ConnectionResult = {
-  state: ConnectionState; failureCode?: ConnectionFailureCode | 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_session_rejected'; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
+  state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
 }
 export type ConnectionContext = {
   channel: 'email' | 'linkedin'; email: string; workspace: string; credential: string
@@ -40,7 +41,7 @@ export function emailAuthorizationUrl(value: string): string {
   return new URL(value).hostname === 'login.microsoftonline.com' ? microsoftAuthorizationUrl(value) : googleAuthorizationUrl(value)
 }
 
-async function readProviderJson(response: Response): Promise<unknown> {
+async function readProviderText(response: Response, limit = 65536): Promise<string> {
     const reader = response.body?.getReader()
     if (!reader) throw new ProviderFailure('uncertain')
     let size = 0; let text = ''; const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -49,11 +50,35 @@ async function readProviderJson(response: Response): Promise<unknown> {
         const { done, value } = await reader.read()
         if (done) break
         size += value.length
-        if (size > 65536) { await reader.cancel(); throw new ProviderFailure('uncertain') }
+        if (size > limit) { await reader.cancel(); throw new ProviderFailure('uncertain') }
         text += decoder.decode(value, { stream: true })
       }
-      return JSON.parse(text + decoder.decode()) as unknown
+      return text + decoder.decode()
     } finally { reader.releaseLock() }
+}
+
+async function readProviderJson(response: Response): Promise<unknown> {
+  return JSON.parse(await readProviderText(response)) as unknown
+}
+
+/** Classify bounded error fields only; never log or return the service text. */
+function linkedinRequestFailure(raw: string): LinkedInFailureCode {
+  let message = ''
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (typeof value === 'string') message = value
+    else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const fields = value as Record<string, unknown>
+      message = ['message', 'errorMessage', 'detail', 'error'].map(key => typeof fields[key] === 'string' ? fields[key] : '').join(' ')
+      if (fields.errors && typeof fields.errors === 'object' && !Array.isArray(fields.errors)) {
+        const keys = Object.keys(fields.errors)
+        if (keys.some(key => /^(proxyCountryCode|customProxy)$/i.test(key))) return 'linkedin_location_unavailable'
+      }
+    }
+  } catch { if (!/^[\s]*[<{[]/.test(raw)) message = raw }
+  if (/\b(proxy|country|proxyCountryCode|customProxy)\b/i.test(message)) return 'linkedin_location_unavailable'
+  if (/\b(cookie|cookies|session)\b.{0,80}\b(invalid|expired|rejected)\b|\b(invalid|expired|rejected)\b.{0,80}\b(cookie|cookies|session)\b/i.test(message)) return 'linkedin_session_rejected'
+  return 'linkedin_request_rejected'
 }
 
 function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
@@ -83,6 +108,10 @@ function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
               : body.data.message.startsWith('Invalid scope. Required: accounts:read.') ? 'account_read_required' : 'access_denied'
           }
         } catch { /* The HTTP status remains authoritative when the error body is malformed. */ }
+      } else if (channel === 'linkedin' && [400, 422].includes(response.status)) {
+        failureCode = 'linkedin_request_rejected'
+        try { failureCode = linkedinRequestFailure(await readProviderText(response, 16384)) }
+        catch { /* An unreadable rejection must not be described as bad cookies. */ }
       } else await response.body?.cancel()
       throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status, failureCode)
     }
@@ -195,17 +224,21 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       return { state: result.status }
     }
     if (action === 'start') {
+      if (!input.country || !/^[a-z]{2}$/i.test(input.country)) return { state: 'failed', failureCode: 'linkedin_location_unavailable' }
+      // GetProxyCountries returns lowercase codes (us, in, gb), unlike the
+      // uppercase examples in the endpoint docs. Preserve the selected country.
+      const country = input.country.toLowerCase()
       if (input.cookies) {
         if (!input.country || !input.userAgent || !context.expectedProfileUrl) return { state: 'failed' }
         const cookies = linkedinCookies.parse(input.cookies)
         const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/ConnectWithCookies', {
-          cookies, proxyCountryCode: input.country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent,
+          cookies, proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent,
         }))
         return { state: 'pending', remoteAccount: result.linkedInAccountId }
       }
       if (!input.password || !input.country) return { state: 'failed' }
       const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/Connect', {
-        username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: input.country, inboxScrapeMode: 'HeyReachOnly',
+        username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly',
       }))
       return { state: 'pending', remoteAccount: result.linkedInAccountId }
     }
@@ -240,6 +273,7 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       console.warn('LinkedIn account connection failed', { action,
         method: action === 'start' ? input.cookies ? 'cookies' : 'password' : undefined,
         status: error instanceof ProviderFailure ? error.status : undefined,
+        failureCode: error instanceof ProviderFailure ? error.failureCode : undefined,
         reason: error instanceof z.ZodError ? 'unexpected_response' : error instanceof ProviderFailure ? 'provider_response' : 'transport_error' })
     }
     if (context.channel === 'linkedin' && action !== 'start') return { state: 'pending' }
@@ -266,8 +300,9 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       return { state: error instanceof ProviderFailure ? error.state : 'uncertain', failureCode }
     }
     const status = error instanceof ProviderFailure ? error.status : undefined
+    const failureCode = (error instanceof ProviderFailure ? error.failureCode : undefined)
+      ?? ([401, 403].includes(status ?? 0) ? 'linkedin_access_denied' : status === 429 ? 'rate_limited' : undefined)
     return { state: error instanceof ProviderFailure ? error.state : 'uncertain',
-      ...([401, 403].includes(status ?? 0) ? { failureCode: 'linkedin_access_denied' as const }
-        : input.cookies && [400, 422].includes(status ?? 0) ? { failureCode: 'linkedin_session_rejected' as const } : {}) }
+      ...(failureCode ? { failureCode } : {}) }
   }
 }
