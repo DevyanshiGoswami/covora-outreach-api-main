@@ -245,6 +245,38 @@ async function linkedinSenders(options: ProviderOptions): Promise<{ id: string; 
   } catch { return null }
 }
 
+/**
+ * Check a stuck (uncertain) LinkedIn attempt. A known sender is restored to normal status checks.
+ * Otherwise the newest sender carrying this login email is adopted; status checks then verify it
+ * exactly as after a normal start. No sender means the attempt never reached HeyReach.
+ */
+export async function reviewLinkedinAttempt(context: ConnectionContext, options: ProviderOptions): Promise<
+  { outcome: 'restore'; remoteAccount: string } | { outcome: 'missing' | 'unavailable' }> {
+  if (context.remoteAccount) return { outcome: 'restore', remoteAccount: remoteId.parse(context.remoteAccount) }
+  const list = await linkedinSenders(options)
+  if (!list) return { outcome: 'unavailable' }
+  const matches = list.filter(sender => sender.email === context.email).sort((a, b) => Number(b.id) - Number(a.id))
+  return matches.length ? { outcome: 'restore', remoteAccount: matches[0].id } : { outcome: 'missing' }
+}
+
+/**
+ * Remove a HeyReach sender that Covora created for an attempt that failed or expired, so it stops
+ * holding a paid seat. A sender used by any campaign is kept.
+ */
+export async function releaseLinkedinSender(remoteAccount: string, options: ProviderOptions): Promise<'released' | 'kept' | 'unavailable'> {
+  try {
+    const id = remoteId.parse(remoteAccount)
+    const request = transport('linkedin', options, LINKEDIN_LIST_TIMEOUT_MS)
+    let raw: unknown
+    try { raw = await request(`/li_account/GetById?accountId=${id}`) }
+    catch (error) { if (error instanceof ProviderFailure && error.status === 404) return 'released'; throw error }
+    const account = z.object({ id: remoteId, activeCampaigns: z.number().int().nonnegative() }).parse(raw)
+    if (account.id !== id || account.activeCampaigns > 0) return 'kept'
+    await request(`/li_account/RemoveAccount/${id}?force=false`, undefined, 'DELETE')
+    return 'released'
+  } catch { return 'unavailable' }
+}
+
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
   input: { password?: string; country?: string; pin?: string; provider?: EmailProvider; cookies?: LinkedInCookie[]; userAgent?: string } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'
@@ -394,6 +426,11 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         ?? (status === 401 ? 'key_rejected' : status === 403 ? 'access_denied' : status === 429 ? 'rate_limited' : 'service_unavailable')
       const reason = error instanceof z.ZodError ? 'unexpected_response' : error instanceof ProviderFailure ? 'provider_response' : 'transport_error'
       console.warn('Email account connection failed', { action, stage, status, failureCode, reason })
+      // Nothing reaches sign-in until the workspace check passes. When that first request is lost,
+      // a start is a definite failure (retry after the usual wait) and a check consumed nothing.
+      if (stage === 'workspace_check' && (!(error instanceof ProviderFailure) || error.state === 'uncertain')) {
+        return { state: action === 'start' ? 'failed' : 'pending', failureCode }
+      }
       return { state: error instanceof ProviderFailure ? error.state : 'uncertain', failureCode }
     }
     const status = error instanceof ProviderFailure ? error.status : undefined

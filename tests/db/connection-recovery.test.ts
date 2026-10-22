@@ -1,0 +1,193 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { randomUUID } from 'node:crypto'
+import { adminClient, anonClient } from '../helpers/admin'
+import { createTenant } from '../helpers/tenants'
+import { grantOutreachMembership } from '../helpers/outreach'
+import { loadTestEnv } from '../helpers/env'
+import { createOnboardingHandlers } from '../../src/lib/onboarding-api'
+import type { Database } from '../../src/lib/database.types'
+
+const env = loadTestEnv()
+const admin = adminClient()
+type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>
+type Route = [RegExp, Handler]
+function provider(routes: Route[], calls: string[]): typeof fetch {
+  return async (input, init) => {
+    const url = new URL(String(input)); const key = `${init?.method ?? 'GET'} ${url.pathname.replace(/^\/api\/(v2|public)/, '')}`
+    calls.push(key)
+    for (const [pattern, handler] of routes) if (pattern.test(key)) return handler(url, init)
+    throw new Error(`Unexpected provider request ${key}`)
+  }
+}
+const down: Handler = () => { throw new TypeError('fetch failed') }
+const json = (body: unknown, status = 200) => () => Response.json(body, { status })
+const senders = (list: { id: number; emailAddress?: string | null }[]): Route => [/^POST \/li_account\/GetAll$/, () => Response.json({ totalCount: list.length, items: list })]
+const connect = (h: Handler): Route => [/^POST \/li_account\/Connect(WithCookies)?$/, h]
+const liStatus = (h: Handler): Route => [/^GET \/li_account\/GetAccountStatus\//, h]
+const li = (id: number, state: string, profileUrl: string | null = null) => json({ accountId: id, status: state, failureReason: null, profile: { fullName: null, email: null, profileUrl, avatarUrl: null } })
+const getById = (h: Handler): Route => [/^GET \/li_account\/GetById$/, h]
+const remove = (h: Handler): Route => [/^DELETE \/li_account\/RemoveAccount\//, h]
+const ws = (w: string): Route => [/^GET \/workspaces\/current$/, json({ id: w })]
+const init = (p: string): Route => [new RegExp(`^POST /oauth/${p}/init$`), () => Response.json({ session_id: randomUUID(), expires_at: new Date(Date.now() + 600000).toISOString(),
+  auth_url: p === 'microsoft' ? 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=s' : 'https://accounts.google.com/o/oauth2/v2/auth?state=s' })]
+const mailbox = (h: Handler): Route => [/^GET \/accounts\//, h]
+
+async function person(t: Parameters<typeof createTenant>[0], shared?: { workspace: string; linkedinWorkspace: string }) {
+  const tenant = await createTenant(t, { features: ['outreach_app'] })
+  await grantOutreachMembership(tenant.user.id, tenant.client.id)
+  const workspace = shared?.workspace ?? randomUUID(), linkedinWorkspace = shared?.linkedinWorkspace ?? randomUUID()
+  assert.ifError((await admin.from('outreach_account_workspaces').insert({ client_id: tenant.client.id, credential_ref: 'OUTREACH_INSTANTLY_TEST', remote_workspace_id: workspace, enabled: true })).error)
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({ client_id: tenant.client.id, channel: 'linkedin', credential_ref: 'OUTREACH_HEYREACH_TEST', remote_workspace_id: linkedinWorkspace, enabled: true })).error)
+  const created = await tenant.supabase.rpc('create_outreach_person', { p_client_id: tenant.client.id, p_name: 'Test person', p_email: tenant.user.email })
+  assert.ifError(created.error)
+  return { ...tenant, workspace, linkedinWorkspace, person: created.data! as string, email: tenant.user.email }
+}
+const handlers = (routes: Route[], calls: string[] = []) => createOnboardingHandlers({ url: env.URL, anonKey: env.ANON, serviceKey: env.SERVICE, fetch,
+  providerFetch: provider(routes, calls), credentials: { OUTREACH_INSTANTLY_TEST: 'synthetic', OUTREACH_HEYREACH_TEST: 'synthetic' } })
+async function act(h: ReturnType<typeof handlers>, session: ReturnType<typeof anonClient>, body: Record<string, unknown>) {
+  const token = (await session.auth.getSession()).data.session!.access_token
+  const response = await h.connection(new Request('http://localhost/api/onboarding/connections', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }))
+  return { http: response.status, ...(await response.json().catch(() => ({}))) } as { http: number; state?: string; failureCode?: string; reviewStatus?: string; authUrl?: string | null }
+}
+async function latest(personId: string, channel: string) {
+  const row = await admin.from('outreach_connections').select('id,state,remote_account,remote_created,remote_released_at').eq('person_id', personId).eq('channel', channel).order('created_at', { ascending: false }).limit(1).single()
+  assert.ifError(row.error); return row.data!
+}
+const touch = async (personId: string, channel: string, patch: Database['public']['Tables']['outreach_connections']['Update']) => {
+  assert.ifError((await admin.from('outreach_connections').update(patch).eq('id', (await latest(personId, channel)).id)).error)
+}
+const pollReady = (p: string, c: string) => touch(p, c, { next_poll_at: new Date(0).toISOString() })
+const cooledDown = (p: string, c: string) => touch(p, c, { created_at: new Date(Date.now() - 61000).toISOString() })
+const windowPassed = (p: string, c: string) => touch(p, c, { expires_at: new Date(Date.now() - 1000).toISOString(), created_at: new Date(Date.now() - 700000).toISOString() })
+const password = (personId: string, email: string) => ({ action: 'start', personId, channel: 'linkedin', email, password: 'synthetic-password', country: 'US' })
+const liPoll = (personId: string) => ({ action: 'poll', personId, channel: 'linkedin' })
+const liReview = (personId: string) => ({ action: 'review', personId, channel: 'linkedin' })
+
+test('a lost LinkedIn connect with nothing created waits out its window, then expires and can be retried', async t => {
+  const s = await person(t)
+  assert.equal((await act(handlers([senders([]), connect(down)]), s.supabase, password(s.person, s.email))).state, 'uncertain')
+  const h = handlers([senders([{ id: 9, emailAddress: 'someone-else@example.test' }]), connect(json({ linkedInAccountId: 601 }))])
+  await pollReady(s.person, 'linkedin')
+  const early = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([early.state, early.reviewStatus], ['uncertain', 'waiting'])
+  await windowPassed(s.person, 'linkedin'); await pollReady(s.person, 'linkedin')
+  const late = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([late.state, late.reviewStatus], ['expired', 'missing'])
+  assert.equal((await act(h, s.supabase, password(s.person, s.email))).state, 'pending')
+})
+
+test('a lost LinkedIn connect is recovered from the sender carrying the login, then verified by status checks', async t => {
+  const s = await person(t)
+  await act(handlers([senders([]), connect(down)]), s.supabase, password(s.person, s.email))
+  const h = handlers([senders([{ id: 602, emailAddress: s.email }]), liStatus(li(602, 'Connected', 'https://www.linkedin.com/in/test-person'))])
+  await pollReady(s.person, 'linkedin')
+  const restored = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([restored.state, restored.reviewStatus], ['pending', 'restored'])
+  const row = await latest(s.person, 'linkedin'); assert.deepEqual([row.remote_account, row.remote_created], ['602', false])
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
+})
+
+test('an attempt whose request died after HeyReach accepted it is restored with its known sender', async t => {
+  const s = await person(t)
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 603 })), liStatus(li(603, 'Connected', 'https://www.linkedin.com/in/test-person'))])
+  await act(h, s.supabase, password(s.person, s.email))
+  await touch(s.person, 'linkedin', { state: 'pending', lease_id: randomUUID(), lease_until: new Date(Date.now() - 1000).toISOString() })
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'uncertain')
+  await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liReview(s.person))).reviewStatus, 'restored')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
+})
+
+test('a failed LinkedIn login releases the sender Covora created, once', async t => {
+  const s = await person(t); const calls: string[] = []; let gone = false
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 604 })), liStatus(li(604, 'Disconnected')),
+    getById(() => gone ? Response.json({}, { status: 404 }) : Response.json({ id: 604, activeCampaigns: 0 })), remove(() => { gone = true; return Response.json({}) })], calls)
+  await act(h, s.supabase, password(s.person, s.email))
+  assert.equal((await latest(s.person, 'linkedin')).remote_created, true)
+  await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).failureCode, 'linkedin_disconnected')
+  assert.deepEqual(calls.filter(call => call.startsWith('DELETE')), ['DELETE /li_account/RemoveAccount/604'])
+  assert.ok((await latest(s.person, 'linkedin')).remote_released_at)
+  await cooledDown(s.person, 'linkedin')
+  await act(handlers([senders([]), connect(json({ linkedInAccountId: 605 }))], calls), s.supabase, password(s.person, s.email))
+  assert.equal(calls.filter(call => call.startsWith('DELETE')).length, 1)
+})
+
+test('an expired attempt releases its sender before the next connect uses a seat', async t => {
+  const s = await person(t); const calls: string[] = []
+  await act(handlers([senders([]), connect(json({ linkedInAccountId: 606 })), liStatus(li(606, 'Connecting'))]), s.supabase, password(s.person, s.email))
+  await windowPassed(s.person, 'linkedin'); await pollReady(s.person, 'linkedin')
+  assert.equal((await act(handlers([liStatus(li(606, 'Connecting'))]), s.supabase, liPoll(s.person))).state, 'expired')
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 607 })), getById(json({ id: 606, activeCampaigns: 0 })), remove(json({}))], calls)
+  assert.equal((await act(h, s.supabase, password(s.person, s.email))).state, 'pending')
+  const order = calls.filter(call => /RemoveAccount|Connect$/.test(call))
+  assert.deepEqual(order, ['DELETE /li_account/RemoveAccount/606', 'POST /li_account/Connect'])
+})
+
+test('a sender in a campaign, or one Covora did not create, is never released', async t => {
+  const s = await person(t); const calls: string[] = []
+  await act(handlers([senders([]), connect(json({ linkedInAccountId: 608 }))]), s.supabase, password(s.person, s.email))
+  await pollReady(s.person, 'linkedin')
+  await act(handlers([liStatus(li(608, 'Disconnected')), getById(json({ id: 608, activeCampaigns: 1 })), remove(json({}))], calls), s.supabase, liPoll(s.person))
+  assert.ok(!calls.some(call => call.startsWith('DELETE'))); assert.equal((await latest(s.person, 'linkedin')).remote_released_at, null)
+  const other = await person(t, s); const otherCalls: string[] = []
+  await act(handlers([senders([]), connect(down)]), other.supabase, password(other.person, other.email))
+  await pollReady(other.person, 'linkedin')
+  await act(handlers([senders([{ id: 609, emailAddress: other.email }])]), other.supabase, liReview(other.person))
+  await pollReady(other.person, 'linkedin')
+  await act(handlers([liStatus(li(609, 'Disconnected')), getById(json({ id: 609, activeCampaigns: 0 })), remove(json({}))], otherCalls), other.supabase, liPoll(other.person))
+  assert.ok(!otherCalls.some(call => call.startsWith('DELETE')))
+})
+
+test('only someone who may connect this person can check, switch or release their attempts', async t => {
+  const s = await person(t); const outsider = await createTenant(t, { features: ['outreach_app'] })
+  await act(handlers([senders([]), connect(down)]), s.supabase, password(s.person, s.email))
+  assert.equal((await outsider.supabase.rpc('prepare_outreach_linkedin_review', { p_person: s.person })).error?.code, '42501')
+  assert.equal((await outsider.supabase.rpc('list_outreach_remote_releases', { p_person: s.person })).error?.code, '42501')
+  assert.equal((await outsider.supabase.rpc('prepare_outreach_email_switch', { p_person: s.person })).error?.code, '42501')
+  for (const name of ['read_outreach_linkedin_review', 'finish_outreach_linkedin_review', 'finish_outreach_email_switch', 'mark_outreach_remote_created', 'mark_outreach_remote_released'] as const) {
+    const args = name === 'read_outreach_linkedin_review' ? { p_id: randomUUID(), p_lease: randomUUID() } : name.startsWith('finish') ? { p_id: randomUUID(), p_lease: randomUUID(), p_outcome: 'missing' }
+      : name === 'mark_outreach_remote_created' ? { p_id: randomUUID(), p_remote_account: '1' } : { p_id: randomUUID() }
+    assert.equal((await s.supabase.rpc(name, args as never)).error?.code, '42501', name)
+  }
+})
+
+test('losing the very first email request is a normal failure, retryable after 30 seconds', async t => {
+  const s = await person(t)
+  const first = await act(handlers([[/^GET \/workspaces\/current$/, down]]), s.supabase, { action: 'start', personId: s.person, channel: 'email', provider: 'google' })
+  assert.deepEqual([first.state, first.failureCode], ['failed', 'service_unavailable'])
+  await cooledDown(s.person, 'email')
+  assert.equal((await act(handlers([ws(s.workspace), init('google')]), s.supabase, { action: 'start', personId: s.person, channel: 'email', provider: 'google' })).state, 'pending')
+})
+
+test('switching provider while a sign-in is open checks the mailbox first and never loses an open sign-in', async t => {
+  const s = await person(t)
+  const start = (provider: string) => ({ action: 'start', personId: s.person, channel: 'email', provider })
+  const change = (provider: string) => ({ action: 'switch', personId: s.person, channel: 'email', provider })
+  let lookup: Handler = json({ message: 'Account not found' }, 404)
+  const h = handlers([ws(s.workspace), init('google'), init('microsoft'), mailbox((url, init) => lookup(url, init))])
+  const google = await act(h, s.supabase, start('google'))
+  assert.equal(new URL(google.authUrl!).hostname, 'accounts.google.com')
+  // A plain start still resumes the open sign-in; only the explicit switch replaces it.
+  assert.equal((await act(h, s.supabase, start('microsoft'))).authUrl, google.authUrl)
+  const tooSoon = await act(h, s.supabase, change('microsoft'))
+  assert.deepEqual([tooSoon.http, tooSoon.failureCode], [400, 'connection_retry_later'])
+  await cooledDown(s.person, 'email')
+  lookup = () => Response.json({ message: 'unavailable' }, { status: 503 })
+  const unchecked = await act(h, s.supabase, change('microsoft'))
+  assert.deepEqual([unchecked.state, unchecked.authUrl, unchecked.failureCode], ['pending', null, 'service_unavailable'])
+  const open = await admin.from('outreach_connections').select('state,auth_url,lease_id').eq('id', (await latest(s.person, 'email')).id).single()
+  assert.deepEqual(open.data, { state: 'pending', auth_url: google.authUrl, lease_id: null })
+  lookup = json({ message: 'Account not found' }, 404)
+  const microsoft = await act(h, s.supabase, change('microsoft'))
+  assert.equal(new URL(microsoft.authUrl!).hostname, 'login.microsoftonline.com')
+  assert.equal((await act(h, s.supabase, change('microsoft'))).authUrl, microsoft.authUrl)
+
+  const done = await person(t, s)
+  const connected = handlers([ws(done.workspace), init('google'), init('microsoft'), mailbox(json({ email: done.email, organization: done.workspace, status: 1, setup_pending: false }))])
+  await act(connected, done.supabase, { action: 'start', personId: done.person, channel: 'email', provider: 'google' })
+  await cooledDown(done.person, 'email')
+  const kept = await act(connected, done.supabase, { action: 'switch', personId: done.person, channel: 'email', provider: 'microsoft' })
+  assert.equal(kept.state, 'connected')
+})

@@ -51,8 +51,15 @@ test('Google success is bound to the expected mailbox and account workspace', as
 })
 test('timeouts and unrecognized consumed OAuth results remain uncertain with no automatic retry', async () => {
   let calls = 0
-  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: async () => { calls++; throw new Error('Do not expose credential diagnostics') } })
-  assert.deepEqual(result, { state: 'uncertain', failureCode: 'service_unavailable' }); assert.equal(calls, 1)
+  // A lost sign-in start may have created a session at the provider: unknown, never retried.
+  const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: async url => { calls++; if (String(url).endsWith('/workspaces/current')) return Response.json({ id: workspace }); throw new Error('Do not expose credential diagnostics') } })
+  assert.deepEqual(result, { state: 'uncertain', failureCode: 'service_unavailable' }); assert.equal(calls, 2)
+  // Losing the workspace check means nothing reached sign-in: a definite failure, still not retried.
+  calls = 0
+  assert.deepEqual(await connectAccount(context, 'start', { key: 'synthetic', fetch: async () => { calls++; throw new Error('Do not expose credential diagnostics') } }), { state: 'failed', failureCode: 'service_unavailable' })
+  assert.equal(calls, 1)
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: async () => { throw new TypeError('fetch failed') } }), { state: 'pending', failureCode: 'service_unavailable' })
+  assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: async () => Response.json({}, { status: 401 }) }), { state: 'failed', failureCode: 'key_rejected' })
   assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'unexpected', password: 'sensitive' }]) }), { state: 'uncertain', failureCode: 'service_unavailable' })
 })
 test('HeyReach Connect uses scoped transport and never requests personal inbox scraping', async () => {

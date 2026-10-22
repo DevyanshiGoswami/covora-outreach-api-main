@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
+import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, releaseLinkedinSender, reviewEmailAccount, reviewLinkedinAttempt, type ConnectionResult } from './onboarding-provider'
 import { createProviderCallLogger } from './provider-call-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
@@ -47,6 +47,36 @@ function service(config?: OnboardingApiConfig) {
     } },
   })
 }
+
+/** The open email sign-in's provider, from its stored sign-in link. */
+function emailProviderOf(authUrl: string | null | undefined): 'google' | 'microsoft' | null {
+  if (!authUrl) return null
+  try { return new URL(authUrl).hostname === 'login.microsoftonline.com' ? 'microsoft' : 'google' } catch { return null }
+}
+
+/**
+ * Remove HeyReach senders that Covora created for this person's failed or expired attempts, so they
+ * stop holding seats. The caller's own session authorizes the list; failures never block the request.
+ * The whole cleanup stays within a few seconds so a following connect still fits its lease.
+ */
+async function releaseLinkedinSenders(client: SupabaseClient<Database>, personId: string, requestSignal: AbortSignal, config?: OnboardingApiConfig) {
+  const signal = AbortSignal.any([requestSignal, AbortSignal.timeout(8000)])
+  try {
+    const listed = await client.rpc('list_outreach_remote_releases', { p_person: personId })
+    if (listed.error || !listed.data?.length) return
+    const admin = service(config)
+    const person = await admin.from('outreach_people').select('client_id').eq('id', personId).single()
+    if (person.error || !person.data) return
+    const binding = await admin.from('outreach_reply_workspaces').select('credential_ref').eq('client_id', person.data.client_id).eq('channel', 'linkedin').maybeSingle()
+    const key = binding.data ? await credential(binding.data.credential_ref, config) : undefined
+    if (!key) return
+    for (const row of listed.data) {
+      const outcome = await releaseLinkedinSender(row.remote_account, { key, fetch: config?.providerFetch, signal,
+        log: createProviderCallLogger(admin, { source: 'connection', connectionId: row.connection_id }) })
+      if (outcome === 'released') await admin.rpc('mark_outreach_remote_released', { p_id: row.connection_id })
+    }
+  } catch { /* Seat cleanup is best effort and retried on the next attempt. */ }
+}
 async function input<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   if (new URL(request.url).search) throw new ApiError(400)
   const parsed = schema.safeParse(await readJson(request))
@@ -63,8 +93,9 @@ const connectionInput = z.union([
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), method: z.literal('cookies'), email,
     cookies: linkedinCookies, country: z.string().regex(/^[A-Z]{2}$/), profileUrl: linkedinProfile,
     userAgent: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/) }),
-  z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: z.literal('email') }),
+  z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: channelSchema }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']).optional(), email: email.optional() }),
+  z.strictObject({ action: z.literal('switch'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']), email: email.optional() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), email,
     password: z.string().min(1).max(512), country: z.string().regex(/^[A-Z]{2}$/),
   }),
@@ -194,6 +225,34 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         return json({ connectionId: saved.data.id, state: saved.data.state, authUrl: null, ...(failureCode ? { failureCode } : {}) })
       }
       if (!('personId' in value)) throw new ApiError(400)
+      if (value.action === 'review' && value.channel === 'linkedin') {
+        // A stuck LinkedIn attempt: restore it to status checks, or expire it once its window passes.
+        const prepared = await client.rpc('prepare_outreach_linkedin_review', { p_person: value.personId })
+        checkDatabaseError(prepared.error)
+        const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
+        const admin = service(config)
+        let outcome: 'restore' | 'missing' | 'unavailable' | undefined
+        if (claim.claim_token) {
+          const read = await admin.rpc('read_outreach_linkedin_review', { p_id: claim.connection_id, p_lease: claim.claim_token })
+          checkDatabaseError(read.error)
+          const scope = privateContext.safeParse(read.data)
+          if (!scope.success) throw new ApiError(403)
+          const key = await credential(scope.data.credential, config)
+          const result = key ? await reviewLinkedinAttempt(scope.data, { key, fetch: config?.providerFetch, signal: request.signal,
+            log: createProviderCallLogger(admin, { source: 'connection', connectionId: claim.connection_id }) }) : { outcome: 'unavailable' as const }
+          outcome = result.outcome
+          const finished = await admin.rpc('finish_outreach_linkedin_review', { p_id: claim.connection_id, p_lease: claim.claim_token, p_outcome: outcome,
+            ...(result.outcome === 'restore' ? { p_remote_account: result.remoteAccount } : {}) })
+          checkDatabaseError(finished.error)
+          if (!finished.data) throw new ApiError(403)
+        }
+        const saved = await admin.from('outreach_connections').select('id,state,expires_at').eq('id', claim.connection_id).single()
+        checkDatabaseError(saved.error)
+        if (!saved.data) throw new ApiError(500)
+        return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at, authUrl: null,
+          ...(saved.data.state === 'pending' ? { nextStep: 'check_status' } : {}),
+          reviewStatus: outcome === 'restore' ? 'restored' : outcome === 'missing' ? (saved.data.state === 'expired' ? 'missing' : 'waiting') : outcome ?? 'checking' })
+      }
       if (value.action === 'review') {
         const prepared = await client.rpc('prepare_outreach_email_review', { p_person: value.personId })
         checkDatabaseError(prepared.error)
@@ -222,9 +281,45 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
           reviewStatus: outcome === 'missing' ? (saved.data.state === 'expired' ? 'missing' : 'waiting') : outcome ?? 'checking',
           ...(failureCode ? { failureCode } : {}) })
       }
+      if (value.action === 'switch') {
+        // An explicit request to use the other provider while a sign-in is open. The reserved mailbox
+        // is checked first: a sign-in that already completed is kept as connected, and one that cannot
+        // be checked stays open exactly as it was.
+        const open = await service(config).from('outreach_connections').select('state,auth_url').eq('person_id', value.personId).eq('channel', 'email')
+          .order('created_at', { ascending: false }).limit(1).maybeSingle()
+        const openProvider = open.data?.state === 'pending' ? emailProviderOf(open.data.auth_url) : null
+        if (openProvider && openProvider !== value.provider) {
+          const switching = await client.rpc('prepare_outreach_email_switch', { p_person: value.personId })
+          if (switching.error?.code === '22023' && switching.error.message === 'Connection retry too soon')
+            return json({ error: 'Connection request rejected.', failureCode: 'connection_retry_later' }, 400)
+          checkDatabaseError(switching.error)
+          const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(switching.data)[0]
+          if (claim.claim_token) {
+            const admin = service(config)
+            const read = await admin.rpc('read_outreach_email_review', { p_id: claim.connection_id, p_lease: claim.claim_token })
+            checkDatabaseError(read.error)
+            const scope = privateContext.safeParse(read.data)
+            if (!scope.success) throw new ApiError(403)
+            const key = await credential(scope.data.credential, config)
+            const result = key ? await reviewEmailAccount(scope.data, { key, fetch: config?.providerFetch, signal: request.signal,
+              log: createProviderCallLogger(admin, { source: 'email_review', connectionId: claim.connection_id }) }) : { outcome: 'unavailable' as const }
+            const finished = await admin.rpc('finish_outreach_email_switch', { p_id: claim.connection_id, p_lease: claim.claim_token, p_outcome: result.outcome })
+            checkDatabaseError(finished.error)
+            if (!finished.data) throw new ApiError(403)
+            if (result.outcome === 'unavailable') {
+              const kept = await admin.from('outreach_connections').select('id,state,expires_at').eq('id', claim.connection_id).single()
+              checkDatabaseError(kept.error)
+              if (!kept.data) throw new ApiError(500)
+              return json({ connectionId: kept.data.id, state: kept.data.state, expiresAt: kept.data.expires_at, authUrl: null,
+                failureCode: ('failureCode' in result && result.failureCode) || 'service_unavailable' })
+            }
+          }
+        }
+      }
+      const action = value.action === 'switch' ? 'start' : value.action
       const prepared = 'method' in value && value.method === 'cookies'
         ? await client.rpc('prepare_outreach_linkedin_cookies', { p_person: value.personId, p_email: value.email, p_profile: value.profileUrl })
-        : await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: value.action,
+        : await client.rpc('prepare_outreach_connection', { p_person: value.personId, p_channel: value.channel, p_action: action,
           ...('email' in value ? { p_email: value.email } : {}) })
       if (prepared.error?.code === '22023') {
         const failures: Record<string, string> = {
@@ -247,7 +342,9 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         const scope = privateContext.safeParse(result.data)
         if (!scope.success) throw new ApiError(403)
         const key = await credential(scope.data.credential, config)
-        const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal,
+        // Free seats held by this person's earlier failed or expired attempts before using another.
+        if (key && scope.data.channel === 'linkedin' && action === 'start') await releaseLinkedinSenders(client, value.personId, request.signal, config)
+        const observation: ConnectionResult = key ? await connectAccount(scope.data, action, { key, fetch: config?.providerFetch, signal: request.signal,
           log: createProviderCallLogger(admin, { source: 'connection', connectionId: claim.connection_id }) }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
           ...('cookies' in value ? { cookies: value.cookies, country: value.country, userAgent: value.userAgent } : {}),
@@ -266,12 +363,17 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         })
         checkDatabaseError(finished.error)
         if (!finished.data) throw new ApiError(403)
+        if (scope.data.channel === 'linkedin' && action === 'start' && observation.state === 'pending' && observation.remoteAccount) {
+          // Remember that Covora created this sender, so a later failure can release its seat.
+          await admin.rpc('mark_outreach_remote_created', { p_id: claim.connection_id, p_remote_account: observation.remoteAccount })
+        }
+        if (scope.data.channel === 'linkedin' && observation.state === 'failed') await releaseLinkedinSenders(client, value.personId, request.signal, config)
       }
       // prepare authorized the same actor even for an idempotent/cache response.
       const saved = await admin.from('outreach_connections').select('id,state,auth_url,expires_at').eq('id', claim.connection_id).single()
       checkDatabaseError(saved.error)
       if (!saved.data) throw new ApiError(500)
-      if (value.action === 'pin' && !claim.claim_token && saved.data.state === 'pending') failureCode = 'linkedin_check_in_progress'
+      if (action === 'pin' && !claim.claim_token && saved.data.state === 'pending') failureCode = 'linkedin_check_in_progress'
       return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at,
         ...(failureCode ? { failureCode } : {}),
         ...(saved.data.state === 'pending' && nextStep ? { nextStep } : {}),
