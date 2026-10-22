@@ -66,7 +66,7 @@ async function context(client: SupabaseClient<Database>) {
   return portalContextSchema.parse(result.data)
 }
 const connectionInput = z.union([
-  z.strictObject({ action: z.enum(['disconnect', 'check-disconnect']), connectionId: z.uuid() }),
+  z.strictObject({ action: z.enum(['disconnect', 'check-disconnect', 'cancel']), connectionId: z.uuid() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), method: z.literal('cookies'), email,
     cookies: linkedinCookies, country: z.string().regex(/^[A-Z]{2}$/), profileUrl: linkedinProfile,
     userAgent: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/) }),
@@ -176,9 +176,9 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
     }),
     connection: handle(async (request, client) => {
       const value = await input(request, connectionInput)
-      if (value.action === 'disconnect' || value.action === 'check-disconnect') {
-        const prepared = await client.rpc('prepare_outreach_disconnect', { p_connection: value.connectionId, p_action: value.action === 'disconnect' ? 'disconnect' : 'check' })
-        if (prepared.error?.code === '22023') return json({ error: 'Account removal is unavailable.', failureCode: prepared.error.message === 'Account has a pending reply' ? 'disconnect_pending_reply' : 'disconnect_not_confirmed' }, 400)
+      if (value.action === 'disconnect' || value.action === 'check-disconnect' || value.action === 'cancel') {
+        const prepared = await client.rpc('prepare_outreach_disconnect', { p_connection: value.connectionId, p_action: value.action === 'check-disconnect' ? 'check' : value.action })
+        if (prepared.error?.code === '22023') return json({ error: 'Account removal is unavailable.', failureCode: prepared.error.message === 'Account has a pending reply' ? 'disconnect_pending_reply' : value.action === 'cancel' ? 'linkedin_cancel_unavailable' : 'disconnect_not_confirmed' }, 400)
         checkDatabaseError(prepared.error)
         const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable(), perform_delete: z.boolean() })]).parse(prepared.data)[0]
         const admin = service(config)
