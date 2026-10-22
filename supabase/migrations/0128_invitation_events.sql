@@ -56,4 +56,25 @@ begin
 end; $$;
 revoke all on function public.diagnose_outreach_invitation(text,uuid) from public,anon,authenticated,service_role;
 grant execute on function public.diagnose_outreach_invitation(text,uuid) to service_role;
+
+-- A login created by an invitation whose person never finished joining: never a member or owner
+-- anywhere, never accepted or sent an invitation and no other Covora data. Re-adding such a person
+-- may give them a fresh one-time sign-in link, exactly as adding a brand-new person does. Any login
+-- that was ever used keeps "sign in with your password" only, so nobody can take it over.
+create function public.resumable_outreach_login(p_user uuid) returns boolean
+language sql stable security definer set search_path=pg_catalog,public,pg_temp as $$
+  select exists(select 1 from auth.users u where u.id=p_user and u.invited_at is not null and u.deleted_at is null
+      and not coalesce(u.is_anonymous,false) and not coalesce(u.is_sso_user,false) and (u.banned_until is null or u.banned_until<now()))
+    and not exists(select 1 from public.outreach_memberships x where x.user_id=p_user)
+    and not exists(select 1 from public.outreach_agency_memberships x where x.user_id=p_user)
+    and not exists(select 1 from public.outreach_people x where x.user_id=p_user)
+    and not exists(select 1 from public.outreach_invitations x where x.accepted_by=p_user or x.invited_by=p_user)
+    and not exists(select 1 from public.outreach_owner_invitations x where x.accepted_by=p_user or x.invited_by=p_user or x.target_user_id=p_user)
+    and not exists(select 1 from public.outreach_owner_password_setup x where x.user_id=p_user)
+    and not exists(select 1 from public.outreach_setup_requests x where x.requested_by=p_user)
+    and not exists(select 1 from public.outreach_lead_alert_deliveries x where x.user_id=p_user)
+    and not exists(select 1 from public.outreach_lead_alert_policies x where x.configured_by=p_user);
+$$;
+revoke all on function public.resumable_outreach_login(uuid) from public,anon,authenticated,service_role;
+grant execute on function public.resumable_outreach_login(uuid) to service_role;
 notify pgrst,'reload schema';

@@ -37,22 +37,26 @@ test('adding a user records each step, and a refused link records why', async t 
   t.after(async () => { await admin.auth.admin.deleteUser(verified.data.user!.id) })
 
   assert.equal((await call(team.inspectInvitation, stranger.supabase, { token: first.body.token })).status, 403)
-  // Re-adding the same person replaces the first link, and the login already exists without any access.
+  // They activated but left before joining. Re-adding them replaces the first link and, because
+  // the login never joined anything, includes a fresh one-time sign-in so they can finish.
+  await invitee.auth.signOut()
   const second = await call(onboarding.invite, tenant.supabase, { clientId: tenant.client.id, email, role: 'client_member' })
-  assert.equal(second.status, 200); assert.equal(second.body.loginToken, null)
-  assert.equal((await call(team.inspectInvitation, invitee, { token: first.body.token })).status, 403)
-  assert.equal((await call(team.inspectInvitation, invitee, { token: second.body.token })).status, 200)
-  assert.equal((await call(team.acceptInvitation, invitee, { token: second.body.token })).status, 200)
+  assert.equal(second.status, 200); assert.match(second.body.loginToken, /^resume_[a-f0-9]{20,}$/); assert.match(second.body.notice, /never finished/)
+  const resumed = anonClient()
+  assert.ifError((await resumed.auth.verifyOtp({ token_hash: second.body.loginToken.slice('resume_'.length), type: 'email' })).error)
+  assert.equal((await anonClient().auth.verifyOtp({ token_hash: second.body.loginToken.slice('resume_'.length), type: 'email' })).error?.code, 'otp_expired')
+  assert.equal((await call(team.inspectInvitation, resumed, { token: first.body.token })).status, 403)
+  assert.equal((await call(team.inspectInvitation, resumed, { token: second.body.token })).status, 200)
+  assert.equal((await call(team.acceptInvitation, resumed, { token: second.body.token })).status, 200)
   assert.equal((await call(onboarding.invite, tenant.supabase, { clientId: tenant.client.id, email, role: 'client_member' })).status, 400)
 
   const rows = await events(tenant.client.id)
   const masked = `i***@example.test`
   assert.deepEqual(rows.map(r => [r.step, r.outcome, r.reason]), [
-    ['create', 'ok', 'new_login'], ['inspect', 'failed', 'different_account'], ['create', 'ok', 'existing_login'],
+    ['create', 'ok', 'new_login'], ['inspect', 'failed', 'different_account'], ['create', 'ok', 'resumed_login'],
     ['inspect', 'failed', 'replaced_or_revoked'], ['inspect', 'ok', 'ok'], ['accept', 'ok', 'ok'], ['create', 'failed', 'already_member']])
   assert.ok(rows.every(r => r.invitee === null || r.invitee === masked))
   assert.ok(!JSON.stringify(rows).includes(email) && !JSON.stringify(rows).includes(first.body.token))
-  assert.match(rows[2].detail ?? '', /no workspace access yet/)
   assert.equal(rows[0].actor_user_id, tenant.user.id); assert.equal(rows[1].actor_user_id, stranger.user.id)
   assert.equal(rows[0].invitation_id, first.body.invitationId); assert.equal(rows[3].invitation_id, first.body.invitationId)
 })
@@ -77,4 +81,20 @@ test('only the server can read invitation events or ask why a link was refused',
   assert.equal((await anonClient().rpc('diagnose_outreach_invitation', { p_token: 'a'.repeat(64) })).error?.code, '42501')
   const unknown = await admin.rpc('diagnose_outreach_invitation', { p_token: 'a'.repeat(64) }); assert.ifError(unknown.error)
   assert.equal(unknown.data![0].reason, 'unknown_link')
+})
+
+test('a login that ever joined a workspace never gets a sign-in link from being added again', async t => {
+  const first = await workspace(t), second = await workspace(t)
+  const email = `joined-${randomUUID()}@example.test`
+  const invited = await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })
+  const person = anonClient(), verified = await person.auth.verifyOtp({ token_hash: invited.body.loginToken, type: 'invite' }); assert.ifError(verified.error)
+  t.after(async () => { await admin.auth.admin.deleteUser(verified.data.user!.id) })
+  assert.equal((await call(team.acceptInvitation, person, { token: invited.body.token })).status, 200)
+  const again = await call(onboarding.invite, second.supabase, { clientId: second.client.id, email, role: 'client_member' })
+  assert.equal(again.status, 200); assert.equal(again.body.loginToken, null); assert.match(again.body.notice, /already has a login/)
+  // A former member whose access was revoked is not "never finished" either.
+  assert.ifError((await admin.from('outreach_memberships').update({ state: 'revoked' }).eq('user_id', verified.data.user!.id)).error)
+  assert.equal((await call(onboarding.invite, second.supabase, { clientId: second.client.id, email, role: 'client_member' })).body.loginToken, null)
+  assert.deepEqual((await events(second.client.id)).map(r => r.reason), ['existing_login', 'existing_login'])
+  for (const session of [first.supabase, anonClient()]) assert.equal((await session.rpc('resumable_outreach_login', { p_user: verified.data.user!.id })).error?.code, '42501')
 })

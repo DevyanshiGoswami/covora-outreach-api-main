@@ -1219,6 +1219,9 @@ isOneToOne: false
 "reserve_outreach_lead_alert_policies":
 { Args: { "p_limit"?: number }; Returns: Json
                            },
+"resumable_outreach_login":
+{ Args: { "p_user": string }; Returns: boolean
+                           },
 "revoke_outreach_invitation":
 { Args: { "p_invitation_id": string }; Returns: undefined
                            },
