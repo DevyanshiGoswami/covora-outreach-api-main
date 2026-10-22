@@ -17,7 +17,7 @@ begin
     update public.outreach_connections set state='uncertain',lease_id=null,lease_until=null where id=c.id;
     c.state:='uncertain'; c.lease_id:=null;
   end if;
-  if c.state not in ('uncertain','failed') or (c.state='failed' and c.remote_account is null) or (c.lease_id is not null and c.lease_until>clock_timestamp()) or c.next_poll_at>clock_timestamp() then
+  if c.state not in ('uncertain','failed','expired') or (c.state in ('failed','expired') and c.remote_account is null) or (c.lease_id is not null and c.lease_until>clock_timestamp()) or c.next_poll_at>clock_timestamp() then
     return query select c.id,null::uuid; return;
   end if;
   if not exists(select 1 from public.outreach_connection_reservations where person_id=c.person_id and channel='linkedin' and email=c.expected_email) then raise insufficient_privilege; end if;
@@ -35,7 +35,7 @@ language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $
 declare c public.outreach_connections%rowtype; stamp text; w jsonb;
 begin
   select * into c from public.outreach_connections where id=p_id;
-  if not found or c.channel<>'linkedin' or c.state not in ('uncertain','failed') then return null; end if;
+  if not found or c.channel<>'linkedin' or c.state not in ('uncertain','failed','expired') then return null; end if;
   stamp:=outreach_private.person_connection_authority(c.person_id,c.actor_id);
   w:=outreach_private.connection_workspace(c.client_id,'linkedin');
   if c.authority_stamp<>stamp or c.workspace_version<>(w->>'version')::bigint
@@ -46,7 +46,7 @@ revoke all on function public.read_outreach_linkedin_review(uuid,uuid) from publ
 grant execute on function public.read_outreach_linkedin_review(uuid,uuid) to service_role;
 
 -- restore: the attempt returns to normal status checks with its sender; missing: expires once its
--- sign-in window has passed (as email does); unavailable: preserves failed/uncertain
+-- sign-in window has passed (as email does); unavailable: preserves failed/expired/uncertain
 -- state and its reservation so it can be checked again without another login.
 create or replace function public.finish_outreach_linkedin_review(p_id uuid,p_lease uuid,p_outcome text,p_remote_account text default null) returns boolean
 language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
@@ -58,7 +58,7 @@ begin
   stamp:=outreach_private.person_connection_authority(c.person_id,c.actor_id);
   w:=outreach_private.connection_workspace(c.client_id,'linkedin');
   select * into c from public.outreach_connections where id=p_id for update;
-  if c.state not in ('uncertain','failed') or c.authority_stamp<>stamp or c.workspace_version<>(w->>'version')::bigint
+  if c.state not in ('uncertain','failed','expired') or c.authority_stamp<>stamp or c.workspace_version<>(w->>'version')::bigint
     or p_lease is null or c.lease_id is distinct from p_lease or c.lease_until<=clock_timestamp() then return false; end if;
   if p_outcome='restore' then
     sender:=coalesce(c.remote_account,p_remote_account);
@@ -71,7 +71,7 @@ begin
       lease_id=null,lease_until=null,next_poll_at=clock_timestamp(),updated_at=clock_timestamp() where id=c.id;
     return true;
   end if;
-  next_state:=case when c.state='failed' then 'failed' when p_outcome='missing' and c.expires_at<=clock_timestamp() then 'expired' else 'uncertain' end;
+  next_state:=case when c.state in ('failed','expired') then c.state when p_outcome='missing' and c.expires_at<=clock_timestamp() then 'expired' else 'uncertain' end;
   update public.outreach_connections set state=next_state,lease_id=null,lease_until=null,next_poll_at=clock_timestamp()+interval '10 seconds',updated_at=clock_timestamp()
     where id=c.id;
   if next_state='expired' then
@@ -107,8 +107,8 @@ begin
       c.state:='expired';
     end if;
   end if;
-  -- Recovery owns this failed attempt until its status check finishes.
-  if c.state='failed' and c.lease_id is not null and c.lease_until>clock_timestamp() then
+  -- Recovery owns this failed or expired attempt until its status check finishes.
+  if c.state in ('failed','expired') and c.lease_id is not null and c.lease_until>clock_timestamp() then
     raise exception using errcode='22023',message='Connection check in progress'; end if;
   if p_action='start' and (c.id is null or c.state in ('failed','expired','disconnected')) then
     if c.state<>'disconnected' and c.created_at>clock_timestamp()-interval '30 seconds' then
