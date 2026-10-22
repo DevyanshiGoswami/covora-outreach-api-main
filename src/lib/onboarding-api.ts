@@ -8,6 +8,7 @@ import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
 import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, reviewEmailAccount, reviewLinkedinAttempt, type ConnectionResult } from './onboarding-provider'
 import { createProviderCallLogger } from './provider-call-log'
+import { createFailureReason, existingLoginDetail, invitationActor, invitationLogClient, logInvitationEvent } from './invitation-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
@@ -161,11 +162,19 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       const value = await input(request, z.strictObject({ clientId: z.uuid(), email, role: z.enum(['client_admin', 'client_member', 'client_viewer', 'operator']).default('client_admin') }))
       // The invitation RPC independently checks the inviter and permitted target role.
       const invitation = await client.rpc('create_outreach_invitation', { p_client_id: value.clientId, p_email: value.email, p_role: value.role })
+      const log = invitationLogClient(config)
+      const actor = log ? await invitationActor(request, client) : null
+      if (invitation.error) await logInvitationEvent(log, { step: 'create', outcome: 'failed', reason: createFailureReason(invitation.error),
+        clientId: value.clientId, invitee: value.email, actorUserId: actor, detail: invitation.error.code ? `database code ${invitation.error.code}` : null })
       checkDatabaseError(invitation.error)
       const created = z.tuple([z.object({ invitation_id: z.uuid(), token: z.string().regex(/^[a-f0-9]{64}$/), expires_at: z.string() })]).parse(invitation.data)[0]
       // Only invite NEW Auth identities. Never return a magic/recovery link for an
       // existing user: that would let the inviting admin take over their account.
       const link = await service(config).auth.admin.generateLink({ type: 'invite', email: value.email })
+      const existing = Boolean(link.error && ['email_exists', 'user_already_exists'].includes(link.error.code ?? ''))
+      await logInvitationEvent(log, { step: 'create', outcome: 'ok', reason: !link.error ? 'new_login' : existing ? 'existing_login' : 'login_provisioning_failed',
+        clientId: value.clientId, invitationId: created.invitation_id, invitee: value.email, actorUserId: actor,
+        detail: existing ? await existingLoginDetail(log, created.invitation_id) : link.error ? `auth code ${link.error.code ?? 'unknown'}` : null })
       if (link.error && !['email_exists', 'user_already_exists'].includes(link.error.code ?? '')) {
         return json({ invitationId: created.invitation_id, token: created.token, expiresAt: created.expires_at,
           loginToken: null, notice: 'The team invitation is ready. Login provisioning was unavailable; existing users can sign in, or ask the administrator to reissue the invitation.' })

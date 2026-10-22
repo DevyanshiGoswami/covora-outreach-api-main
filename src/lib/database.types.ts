@@ -472,6 +472,19 @@ isOneToOne: false
                   Relationships: [
 
                   ]
+                },"outreach_invitation_events": {
+                  Row: {
+                    "actor_user_id": string | null,"client_id": string | null,"created_at": string,"detail": string | null,"id": number,"invitation_id": string | null,"invitee": string | null,"outcome": string,"reason": string,"step": string
+                  }
+                  Insert: {
+                    "actor_user_id"?: string | null,"client_id"?: string | null,"created_at"?: string,"detail"?: string | null,"id"?: never,"invitation_id"?: string | null,"invitee"?: string | null,"outcome": string,"reason": string,"step": string
+                  }
+                  Update: {
+                    "actor_user_id"?: string | null,"client_id"?: string | null,"created_at"?: string,"detail"?: string | null,"id"?: never,"invitation_id"?: string | null,"invitee"?: string | null,"outcome"?: string,"reason"?: string,"step"?: string
+                  }
+                  Relationships: [
+
+                  ]
                 },"outreach_invitations": {
                   Row: {
                     "accepted_at": string | null,"accepted_by": string | null,"client_id": string,"created_at": string,"email": string,"expires_at": string,"id": string,"invited_by": string,"role": string,"status": string,"target_membership_version": number | null,"target_user_id": string | null,"token_hash": string
@@ -1029,6 +1042,11 @@ isOneToOne: false
                            },
 "create_outreach_person":
 { Args: { "p_client_id": string,"p_email": string,"p_name": string }; Returns: string
+                           },
+"diagnose_outreach_invitation":
+{ Args: { "p_token": string,"p_user"?: string }; Returns: {
+              "client_id": string,"invitation_id": string,"invitee": string,"reason": string
+            }[]
                            },
 "dispatch_outreach_lead_alert":
 { Args: { "p_claim_token": string,"p_delivery_id": string }; Returns: Json
