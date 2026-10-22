@@ -8,6 +8,8 @@ const cookies = [{ name: 'li_at' as const, value: 'AQEDsyntheticsessionvalue0123
   { name: 'JSESSIONID' as const, value: '"ajax:1234567890123"', domain: '.linkedin.com' as const, path: '/' as const }]
 const linkedin: ConnectionContext = { channel: 'linkedin', email: 'person@example.test', workspace: 'w', credential: 'OUTREACH_HEYREACH_TEST',
   remoteSession: null, remoteAccount: null, expectedProfileUrl: 'https://www.linkedin.com/in/test-person' }
+/** Answers the sender list HeyReach is asked for before every connect; other requests go to the handler. */
+const withSenders = (handler: typeof fetch): typeof fetch => async (url, init) => String(url).endsWith('/li_account/GetAll') ? Response.json({ totalCount: 0, items: [] }) : handler(url, init)
 function recorder() { const entries: ProviderCallEntry[] = []; return { entries, log: async (entry: ProviderCallEntry) => { entries.push(entry) } } }
 
 test('provider text keeps the explanation but masks identities and credential-like values', () => {
@@ -33,12 +35,12 @@ test('the first known request ID header is captured', () => {
 
 test('a rejected cookie connection records status, request ID and masked reason without changing the outcome', async () => {
   const { entries, log } = recorder()
-  const result = await connectAccount(linkedin, 'start', { key, log, fetch: async () => new Response(
+  const result = await connectAccount(linkedin, 'start', { key, log, fetch: withSenders(async () => new Response(
     JSON.stringify({ error: { message: 'Account Login API is not enabled for this workspace' }, echo: cookies[0].value }),
-    { status: 403, headers: { 'x-request-id': 'hr-42', 'content-type': 'application/json' } }) }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
+    { status: 403, headers: { 'x-request-id': 'hr-42', 'content-type': 'application/json' } })) }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
   assert.equal(result.state, 'failed')
-  assert.equal(entries.length, 1)
-  const [entry] = entries
+  assert.deepEqual(entries.map(e => [e.operation, e.status]), [['/li_account/GetAll', 200], ['/li_account/ConnectWithCookies', 403]])
+  const entry = entries[1]
   assert.deepEqual({ ...entry, durationMs: 0 }, { channel: 'linkedin', method: 'POST', operation: '/li_account/ConnectWithCookies', status: 403, outcome: 'http_error',
     durationMs: 0, requestId: 'x-request-id: hr-42', errorExcerpt: entry.errorExcerpt })
   assert.match(entry.errorExcerpt!, /Account Login API is not enabled/)
@@ -49,11 +51,11 @@ test('a rejected cookie connection records status, request ID and masked reason 
 test('anything the request sent is scrubbed from the log even when it is short', async () => {
   const { entries, log } = recorder()
   const shortKey = 'k3y-123'
-  await connectAccount(linkedin, 'start', { key: shortKey, log, fetch: async () => new Response(
-    `rejected key ${shortKey} for agent Synthetic Chrome with session ${cookies[1].value} in country us`, { status: 400 }) }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
+  await connectAccount(linkedin, 'start', { key: shortKey, log, fetch: withSenders(async () => new Response(
+    `rejected key ${shortKey} for agent Synthetic Chrome with session ${cookies[1].value} in country us`, { status: 400 })) }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
   const logged = JSON.stringify(entries)
   for (const secret of [shortKey, 'Synthetic Chrome', 'ajax:1234567890123']) assert.ok(!logged.includes(secret), secret)
-  assert.match(entries[0].errorExcerpt!, /^rejected key \[redacted\] for agent \[redacted\]/)
+  assert.match(entries.find(e => e.operation === '/li_account/ConnectWithCookies')!.errorExcerpt!, /^rejected key \[redacted\] for agent \[redacted\]/)
 })
 
 test('successful calls are logged without an excerpt; failed transport is logged and still rejected', async () => {
@@ -63,7 +65,8 @@ test('successful calls are logged without an excerpt; failed transport is logged
   const down = recorder()
   const result = await connectAccount(linkedin, 'start', { key, log: down.log, fetch: async () => { throw new TypeError('fetch failed') } }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
   assert.equal(result.state, 'uncertain')
-  assert.deepEqual(down.entries.map(e => [e.status, e.outcome]), [[null, 'network_error']])
+  // The sender list before the connect fails the same way, so no recovery is attempted.
+  assert.deepEqual(down.entries.map(e => [e.operation, e.status, e.outcome]), [['/li_account/GetAll', null, 'network_error'], ['/li_account/ConnectWithCookies', null, 'network_error']])
 })
 
 test('a failing logger never changes a provider outcome', async () => {

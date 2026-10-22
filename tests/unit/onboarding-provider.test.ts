@@ -8,6 +8,10 @@ const context: ConnectionContext = { channel: 'email', email: 'person@example.te
 function transport(responses: (unknown | Response)[], check?: (url: string, init?: RequestInit) => void): typeof fetch {
   return async (url, init) => { check?.(String(url), init); assert.ok(responses.length, 'Unexpected provider request'); const response = responses.shift(); return response instanceof Response ? response : Response.json(response) }
 }
+/** HeyReach stub: answers the sender list on its own so connect tests script only connect responses. */
+function heyreach(handler: typeof fetch, senders: { id: number; emailAddress?: string }[] = []): typeof fetch {
+  return async (url, init) => String(url).endsWith('/li_account/GetAll') ? Response.json({ totalCount: senders.length, items: senders }) : handler(url, init)
+}
 test('Google initialization only accepts a Google authorization URL and verifies workspace first', async () => {
   const paths: string[] = []
   const result = await connectAccount(context, 'start', { key: 'synthetic', fetch: transport([{ id: workspace }, { session_id: sessionId, auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?state=test', expires_at: new Date(Date.now()+600000).toISOString() }], (url, init) => {
@@ -52,11 +56,11 @@ test('timeouts and unrecognized consumed OAuth results remain uncertain with no 
   assert.deepEqual(await connectAccount(context, 'poll', { key: 'synthetic', fetch: transport([{ id: workspace }, { status: 'unexpected', password: 'sensitive' }]) }), { state: 'uncertain', failureCode: 'service_unavailable' })
 })
 test('HeyReach Connect uses scoped transport and never requests personal inbox scraping', async () => {
-  const result = await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: transport([{ linkedInAccountId: 123 }], (url, init) => {
+  const result = await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: heyreach(transport([{ linkedInAccountId: 123 }], (url, init) => {
     assert.equal(url, 'https://api.heyreach.io/api/public/li_account/Connect')
     assert.equal(new Headers(init?.headers).get('X-API-KEY'), 'synthetic')
     assert.deepEqual(JSON.parse(String(init?.body)), { username: context.email, password: 'fake-password', twoFactorAuthKey: '', proxyCountryCode: 'us', inboxScrapeMode: 'HeyReachOnly' })
-  }) }, { password: 'fake-password', country: 'US' })
+  })) }, { password: 'fake-password', country: 'US' })
   assert.deepEqual(result, { state: 'pending', remoteAccount: '123' }); assert.ok(!JSON.stringify(result).includes('fake-password'))
 })
 test('HeyReach PIN and status are bound to the saved account; unknown intermediate states stay pending', async () => {
@@ -226,10 +230,10 @@ test('cookie polling verifies the expected profile and retains uncertainty on a 
   const cookies=[{name:'li_at' as const,value:'synthetic-cookie-secret',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'synthetic-other-secret',domain:'.linkedin.com' as const,path:'/' as const}]
   const log=t.mock.method(console,'warn',()=>{})
   for(const [status,expected] of [[403,{state:'failed',failureCode:'linkedin_access_denied'}],[400,{state:'failed',failureCode:'linkedin_request_rejected'}],[502,{state:'uncertain'}]] as const){
-    assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:transport([new Response('synthetic-cookie-secret',{status})])},{cookies,country:'US',userAgent:'Synthetic Chrome'}),expected)
+    assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:heyreach(transport([new Response('synthetic-cookie-secret',{status})]))},{cookies,country:'US',userAgent:'Synthetic Chrome'}),expected)
   }
   let calls=0
-  assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:async()=>{calls++;throw Error('synthetic-cookie-secret')}},{cookies,country:'US',userAgent:'Synthetic Chrome'}),{state:'uncertain'})
+  assert.deepEqual(await connectAccount(scope,'start',{key:'synthetic',fetch:heyreach(async()=>{calls++;throw Error('synthetic-cookie-secret')})},{cookies,country:'US',userAgent:'Synthetic Chrome'}),{state:'uncertain'})
   assert.equal(calls,1);assert.ok(!JSON.stringify(log.mock.calls).includes('synthetic-cookie-secret'))
 })
 
@@ -237,7 +241,7 @@ test('LinkedIn failure diagnostics contain fixed metadata without request or res
   const log=t.mock.method(console,'warn',()=>{})
   const scope={...context,channel:'linkedin' as const,expectedProfileUrl:'https://www.linkedin.com/in/synthetic'}
   const cookies=[{name:'li_at' as const,value:'private-cookie',domain:'.linkedin.com' as const,path:'/' as const},{name:'JSESSIONID' as const,value:'private-session',domain:'.linkedin.com' as const,path:'/' as const}]
-  const result=await connectAccount(scope,'start',{key:'private-key',fetch:transport([new Response('private-response',{status:403})])},{cookies,country:'US',userAgent:'private-user-agent'})
+  const result=await connectAccount(scope,'start',{key:'private-key',fetch:heyreach(transport([new Response('private-response',{status:403})]))},{cookies,country:'US',userAgent:'private-user-agent'})
   assert.equal(result.failureCode,'linkedin_access_denied')
   const logs=JSON.stringify(log.mock.calls.map(call=>call.arguments))
   assert.match(logs,/403/); assert.match(logs,/cookies/)
@@ -271,8 +275,51 @@ test('LinkedIn 400/422 separates location errors, expired sessions and unknown r
   ]
   for(const status of [400,422])for(const [body,failureCode] of cases){
     let calls=0
-    const result=await connectAccount(scope,'start',{key:'private-key',fetch:async()=>{calls++;return new Response(body,{status})}},{cookies,country:'US',userAgent:'Synthetic Chrome'})
+    const result=await connectAccount(scope,'start',{key:'private-key',fetch:heyreach(async()=>{calls++;return new Response(body,{status})})},{cookies,country:'US',userAgent:'Synthetic Chrome'})
     assert.deepEqual(result,{state:'failed',failureCode});assert.equal(calls,1)
   }
   const logs=JSON.stringify(log.mock.calls.map(call=>call.arguments));for(const secret of ['private-cookie','private-session','private-key','private-detail',context.email])assert.ok(!logs.includes(secret))
+})
+
+test('a lost connect reply adopts the single sender it created; a browser session is still verified on poll', async () => {
+  const scope = { ...context, channel: 'linkedin' as const, expectedProfileUrl: 'https://www.linkedin.com/in/test-person' }
+  const cookies = [{ name: 'li_at' as const, value: 'synthetic-session', domain: '.linkedin.com' as const, path: '/' as const }, { name: 'JSESSIONID' as const, value: '"ajax:1"', domain: '.linkedin.com' as const, path: '/' as const }]
+  const senders = [{ id: 11 }]
+  const lost = heyreach(async () => { senders.push({ id: 12 }); throw new DOMException('The operation timed out.', 'TimeoutError') }, senders)
+  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: lost }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' }), { state: 'pending', remoteAccount: '12' })
+  // The adopted sender must still prove the expected profile before it can count as connected.
+  const polled = await connectAccount({ ...scope, remoteAccount: '12' }, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 12, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/someone-else' } }]) })
+  assert.deepEqual(polled, { state: 'failed', failureCode: 'linkedin_profile_mismatch' })
+})
+
+test('a lost password login is adopted only for the sender carrying that login, never on ambiguity', async () => {
+  const scope = { ...context, channel: 'linkedin' as const }
+  const attempt = async (created: { id: number; emailAddress?: string }[], start: { id: number; emailAddress?: string }[] = [{ id: 1, emailAddress: 'other@example.test' }]) => {
+    const senders = [...start]
+    return connectAccount(scope, 'start', { key: 'synthetic', fetch: heyreach(async () => { senders.push(...created); throw new TypeError('fetch failed') }, senders) }, { password: 'fake-password', country: 'US' })
+  }
+  assert.deepEqual(await attempt([{ id: 2, emailAddress: context.email.toUpperCase() }]), { state: 'pending', remoteAccount: '2' })
+  assert.deepEqual(await attempt([{ id: 2, emailAddress: 'someone@example.test' }]), { state: 'uncertain' })
+  assert.deepEqual(await attempt([{ id: 2 }]), { state: 'uncertain' })
+  assert.deepEqual(await attempt([{ id: 2, emailAddress: context.email }, { id: 3, emailAddress: context.email }]), { state: 'uncertain' })
+  assert.deepEqual(await attempt([]), { state: 'uncertain' })
+})
+
+test('no recovery without a complete sender list, and never after a definite rejection', async () => {
+  const scope = { ...context, channel: 'linkedin' as const }
+  let lists = 0
+  const unavailable: typeof fetch = async url => { if (String(url).endsWith('/li_account/GetAll')) { lists++; return new Response('down', { status: 503 }) } throw new TypeError('fetch failed') }
+  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: unavailable }, { password: 'fake-password', country: 'US' }), { state: 'uncertain' })
+  assert.equal(lists, 1)
+  const partial: typeof fetch = async url => String(url).endsWith('/li_account/GetAll') ? Response.json({ totalCount: 150, items: [{ id: 1 }] }) : (() => { throw new TypeError('fetch failed') })()
+  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: partial }, { password: 'fake-password', country: 'US' }), { state: 'uncertain' })
+  lists = 0
+  const rejected: typeof fetch = async url => { if (String(url).endsWith('/li_account/GetAll')) { lists++; return Response.json({ totalCount: 0, items: [] }) } return new Response('{"errorMessage":"nope"}', { status: 403 }) }
+  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: rejected }, { password: 'fake-password', country: 'US' }), { state: 'failed', failureCode: 'linkedin_access_denied' })
+  assert.equal(lists, 1)
+})
+
+test('a workspace without a free sender seat gets its own failure code', async () => {
+  const seat = heyreach(transport([new Response(JSON.stringify({ errorMessage: 'You cannot connect a LinkedIn Sender without a free seat. Purchase additional seats, or disconnect an existing sender.' }), { status: 403 })]))
+  assert.deepEqual(await connectAccount({ ...context, channel: 'linkedin' }, 'start', { key: 'synthetic', fetch: seat }, { password: 'fake-password', country: 'US' }), { state: 'failed', failureCode: 'linkedin_no_free_seat' })
 })

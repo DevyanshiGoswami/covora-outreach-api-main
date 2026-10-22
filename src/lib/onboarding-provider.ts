@@ -4,7 +4,7 @@ import { linkedinCookies, linkedinProfileUrl, type LinkedInCookie } from './link
 import { normalizeProviderPath, providerRequestId, redactProviderText, type ProviderCallEntry, type ProviderCallLogger } from './provider-call-log'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
-type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected'
+type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_no_free_seat' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected'
 export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied' | LinkedInFailureCode
 export type ConnectionResult = {
   state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
@@ -96,8 +96,8 @@ async function readErrorText(response: Response, limit: number): Promise<string 
   catch { await response.body?.cancel().catch(() => {}); return null }
 }
 
-function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
-  const signal = AbortSignal.any([AbortSignal.timeout(Math.min(options.timeoutMs ?? 12000, 12000)), ...(options.signal ? [options.signal] : [])])
+function transport(channel: 'email' | 'linkedin', options: ProviderOptions, limitMs = 12000) {
+  const signal = AbortSignal.any([AbortSignal.timeout(Math.min(options.timeoutMs ?? limitMs, limitMs)), ...(options.signal ? [options.signal] : [])])
   return async (path: string, body?: unknown): Promise<unknown> => {
     const method = body === undefined ? 'GET' : 'POST'
     const started = performance.now()
@@ -151,6 +151,9 @@ function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
       } else if (channel === 'linkedin' && [400, 422].includes(response.status)) {
         // An unreadable rejection must not be described as bad cookies.
         failureCode = errorText === null ? 'linkedin_request_rejected' : linkedinRequestFailure(errorText)
+      } else if (channel === 'linkedin' && response.status === 403 && errorText !== null && /\bfree seat\b|\badditional seats\b/i.test(errorText)) {
+        // HeyReach refuses new senders when the workspace has no seat left; the key itself is fine.
+        failureCode = 'linkedin_no_free_seat'
       }
       throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status, failureCode)
     }
@@ -227,6 +230,20 @@ export async function reviewEmailAccount(context: ConnectionContext, options: Pr
   }
 }
 
+/** A HeyReach login can outlast the default deadline; this stays inside the 45-second connection lease. */
+const LINKEDIN_CONNECT_TIMEOUT_MS = 28000
+const LINKEDIN_LIST_TIMEOUT_MS = 5000
+
+/** Senders visible to this key, or null when the list is unavailable or too long to compare completely. */
+async function linkedinSenders(options: ProviderOptions): Promise<{ id: string; email: string | null }[] | null> {
+  try {
+    const result = z.object({ totalCount: z.coerce.number(), items: z.array(z.object({ id: remoteId, emailAddress: z.string().nullish() })) })
+      .parse(await transport('linkedin', options, LINKEDIN_LIST_TIMEOUT_MS)('/li_account/GetAll', { offset: 0, limit: 100, keyword: '' }))
+    if (result.totalCount > result.items.length) return null
+    return result.items.map(item => ({ id: item.id, email: item.emailAddress?.trim().toLowerCase() || null }))
+  } catch { return null }
+}
+
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,
   input: { password?: string; country?: string; pin?: string; provider?: EmailProvider; cookies?: LinkedInCookie[]; userAgent?: string } = {}): Promise<ConnectionResult> {
   let stage = 'workspace_check'
@@ -280,19 +297,31 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       // GetProxyCountries returns lowercase codes (us, in, gb), unlike the
       // uppercase examples in the endpoint docs. Preserve the selected country.
       const country = input.country.toLowerCase()
-      if (input.cookies) {
-        if (!input.country || !input.userAgent || !context.expectedProfileUrl) return { state: 'failed' }
-        const cookies = linkedinCookies.parse(input.cookies)
-        const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/ConnectWithCookies', {
-          cookies, proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent,
-        }))
+      const cookies = input.cookies ? linkedinCookies.parse(input.cookies) : undefined
+      if (cookies && (!input.userAgent || !context.expectedProfileUrl)) return { state: 'failed' }
+      if (!cookies && !input.password) return { state: 'failed' }
+      // HeyReach can take longer than the default deadline to answer a login, and keeps
+      // creating the sender after a lost reply. Snapshot the senders first so a lost reply
+      // can be matched to the one sender it created instead of leaving the attempt stuck.
+      const before = await linkedinSenders(options)
+      try {
+        const result = z.object({ linkedInAccountId: remoteId }).parse(await transport('linkedin', options, LINKEDIN_CONNECT_TIMEOUT_MS)(
+          cookies ? '/li_account/ConnectWithCookies' : '/li_account/Connect',
+          cookies ? { cookies, proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent }
+            : { username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly' }))
         return { state: 'pending', remoteAccount: result.linkedInAccountId }
+      } catch (error) {
+        const lostReply = !(error instanceof ProviderFailure) && !(error instanceof z.ZodError) && !(error instanceof SyntaxError)
+        const after = lostReply && before ? await linkedinSenders(options) : null
+        const added = before && after ? after.filter(sender => !before.some(known => known.id === sender.id)) : []
+        // A browser session is verified against the expected profile on every poll. A password
+        // login has no profile to check, so it is adopted only when the sender carries that login.
+        if (added.length === 1 && (cookies || added[0].email === context.email)) {
+          console.warn('LinkedIn connection recovered after a lost reply', { method: cookies ? 'cookies' : 'password' })
+          return { state: 'pending', remoteAccount: added[0].id }
+        }
+        throw error
       }
-      if (!input.password || !input.country) return { state: 'failed' }
-      const result = z.object({ linkedInAccountId: remoteId }).parse(await request('/li_account/Connect', {
-        username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly',
-      }))
-      return { state: 'pending', remoteAccount: result.linkedInAccountId }
     }
     const id = remoteId.parse(context.remoteAccount)
     if (action === 'pin') {
