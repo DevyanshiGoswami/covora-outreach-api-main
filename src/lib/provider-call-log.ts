@@ -8,7 +8,7 @@ import type { Database } from './database.types'
  */
 export type ProviderCallEntry = {
   channel: 'email' | 'linkedin'
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'DELETE'
   /** Path with emails, UUIDs and numeric IDs replaced by placeholders. */
   operation: string
   /** HTTP status, or null when no response arrived. */
@@ -20,7 +20,7 @@ export type ProviderCallEntry = {
   /** Masked, bounded excerpt of an error response body. Null for successful calls. */
   errorExcerpt: string | null
 }
-export type ProviderCallContext = { source: 'connection' | 'email_review' | 'integration_check' | 'probe'; connectionId?: string | null; integrationId?: string | null }
+export type ProviderCallContext = { source: 'connection' | 'email_review' | 'integration_check' | 'probe' | 'disconnect'; connectionId?: string | null; integrationId?: string | null }
 export type ProviderCallLogger = (entry: ProviderCallEntry) => Promise<void>
 
 const REQUEST_ID_HEADERS = ['x-request-id', 'request-id', 'x-correlation-id', 'x-amzn-requestid', 'x-amz-cf-id', 'x-trace-id', 'traceparent', 'cf-ray']

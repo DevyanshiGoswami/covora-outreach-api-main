@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
+import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
 import { createProviderCallLogger } from './provider-call-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
@@ -59,11 +59,12 @@ async function context(client: SupabaseClient<Database>) {
   return portalContextSchema.parse(result.data)
 }
 const connectionInput = z.union([
+  z.strictObject({ action: z.enum(['disconnect', 'check-disconnect']), connectionId: z.uuid() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), method: z.literal('cookies'), email,
     cookies: linkedinCookies, country: z.string().regex(/^[A-Z]{2}$/), profileUrl: linkedinProfile,
     userAgent: z.string().min(1).max(512).regex(/^[\x20-\x7e]+$/) }),
   z.strictObject({ action: z.literal('review'), personId: z.uuid(), channel: z.literal('email') }),
-  z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']).optional() }),
+  z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('email'), provider: z.enum(['google', 'microsoft']).optional(), email: email.optional() }),
   z.strictObject({ action: z.literal('start'), personId: z.uuid(), channel: z.literal('linkedin'), email,
     password: z.string().min(1).max(512), country: z.string().regex(/^[A-Z]{2}$/),
   }),
@@ -166,6 +167,33 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
     }),
     connection: handle(async (request, client) => {
       const value = await input(request, connectionInput)
+      if (value.action === 'disconnect' || value.action === 'check-disconnect') {
+        const prepared = await client.rpc('prepare_outreach_disconnect', { p_connection: value.connectionId, p_action: value.action === 'disconnect' ? 'disconnect' : 'check' })
+        if (prepared.error?.code === '22023') return json({ error: 'Account removal is unavailable.', failureCode: prepared.error.message === 'Account has a pending reply' ? 'disconnect_pending_reply' : 'disconnect_not_confirmed' }, 400)
+        checkDatabaseError(prepared.error)
+        const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable(), perform_delete: z.boolean() })]).parse(prepared.data)[0]
+        const admin = service(config)
+        let failureCode: string | undefined
+        if (claim.claim_token) {
+          const read = await admin.rpc('read_outreach_disconnect', { p_id: claim.connection_id, p_lease: claim.claim_token })
+          checkDatabaseError(read.error)
+          const scope = privateContext.safeParse(read.data)
+          if (!scope.success) throw new ApiError(403)
+          const key = await credential(scope.data.credential, config)
+          const result = key ? await disconnectAccount(scope.data, claim.perform_delete, { key, fetch: config?.providerFetch, signal: request.signal,
+            log: createProviderCallLogger(admin, { source: 'disconnect', connectionId: claim.connection_id }) })
+            : { outcome: claim.perform_delete ? 'rejected' as const : 'uncertain' as const, failureCode: 'disconnect_access_denied' }
+          failureCode = result.failureCode
+          const finished = await admin.rpc('finish_outreach_disconnect', { p_id: claim.connection_id, p_lease: claim.claim_token, p_outcome: result.outcome })
+          checkDatabaseError(finished.error)
+          if (!finished.data) throw new ApiError(403)
+        }
+        const saved = await admin.from('outreach_connections').select('id,state').eq('id', claim.connection_id).single()
+        checkDatabaseError(saved.error)
+        if (!saved.data) throw new ApiError(500)
+        return json({ connectionId: saved.data.id, state: saved.data.state, authUrl: null, ...(failureCode ? { failureCode } : {}) })
+      }
+      if (!('personId' in value)) throw new ApiError(400)
       if (value.action === 'review') {
         const prepared = await client.rpc('prepare_outreach_email_review', { p_person: value.personId })
         checkDatabaseError(prepared.error)

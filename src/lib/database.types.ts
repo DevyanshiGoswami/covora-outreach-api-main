@@ -1,3 +1,4 @@
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
 export type Database = {
@@ -957,6 +958,9 @@ isOneToOne: false
 "finish_outreach_connection":
 { Args: { "p_address"?: string,"p_auth_url"?: string,"p_id": string,"p_lease": string,"p_remote_account"?: string,"p_remote_session"?: string,"p_state": string }; Returns: boolean
                            },
+"finish_outreach_disconnect":
+{ Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
+                           },
 "finish_outreach_email_review":
 { Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
                            },
@@ -1011,6 +1015,11 @@ isOneToOne: false
               "claim_token": string,"connection_id": string
             }[]
                            },
+"prepare_outreach_disconnect":
+{ Args: { "p_action": string,"p_connection": string }; Returns: {
+              "claim_token": string,"connection_id": string,"perform_delete": boolean
+            }[]
+                           },
 "prepare_outreach_email_review":
 { Args: { "p_person": string }; Returns: {
               "claim_token": string,"connection_id": string
@@ -1034,6 +1043,9 @@ isOneToOne: false
                            },
 "read_outreach_conversation":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_client_id": string,"p_conversation_id": string,"p_limit"?: number }; Returns: Json
+                           },
+"read_outreach_disconnect":
+{ Args: { "p_id": string,"p_lease": string }; Returns: Json
                            },
 "read_outreach_email_review":
 { Args: { "p_id": string,"p_lease": string }; Returns: Json

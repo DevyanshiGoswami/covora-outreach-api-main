@@ -98,8 +98,8 @@ async function readErrorText(response: Response, limit: number): Promise<string 
 
 function transport(channel: 'email' | 'linkedin', options: ProviderOptions, limitMs = 12000) {
   const signal = AbortSignal.any([AbortSignal.timeout(Math.min(options.timeoutMs ?? limitMs, limitMs)), ...(options.signal ? [options.signal] : [])])
-  return async (path: string, body?: unknown): Promise<unknown> => {
-    const method = body === undefined ? 'GET' : 'POST'
+  return async (path: string, body?: unknown, override?: 'DELETE'): Promise<unknown> => {
+    const method = override ?? (body === undefined ? 'GET' : 'POST')
     const started = performance.now()
     // Masked diagnostics only: the key, request body and raw identifiers never reach the log.
     // Anything this request sent is scrubbed first, in case the provider echoes it back.
@@ -158,7 +158,7 @@ function transport(channel: 'email' | 'linkedin', options: ProviderOptions, limi
       throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status, failureCode)
     }
     await record(response.status, 'ok', requestId, null)
-    if (response.status === 204) return null
+    if (response.status === 204 || method === 'DELETE') { await response.body?.cancel(); return null }
     return readProviderJson(response)
   }
 }
@@ -385,5 +385,55 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       ?? ([401, 403].includes(status ?? 0) ? 'linkedin_access_denied' : status === 429 ? 'rate_limited' : undefined)
     return { state: error instanceof ProviderFailure ? error.state : 'uncertain',
       ...(failureCode ? { failureCode } : {}) }
+  }
+}
+
+export type DisconnectResult = { outcome: 'removed' | 'rejected' | 'uncertain'; failureCode?: string }
+/** Remove only the server-resolved sender. A check never repeats DELETE. */
+export async function disconnectAccount(context: ConnectionContext, performDelete: boolean, options: ProviderOptions): Promise<DisconnectResult> {
+  let deleteSent = false
+  let deleteAccepted = false
+  try {
+    const request = transport(context.channel, options)
+    const emailChannel = context.channel === 'email'
+    if (emailChannel) {
+      if (context.remoteAccount !== context.email || z.object({ id: z.uuid() }).parse(await request('/workspaces/current')).id !== context.workspace)
+        return { outcome: performDelete ? 'rejected' : 'uncertain', failureCode: 'disconnect_identity_mismatch' }
+    } else {
+      remoteId.parse(context.remoteAccount)
+      await request('/auth/CheckApiKey')
+    }
+    const accountPath = emailChannel ? `/accounts/${encodeURIComponent(context.email)}` : `/li_account/GetById?accountId=${context.remoteAccount}`
+    let raw: unknown
+    try { raw = await request(accountPath) }
+    catch (error) { if (error instanceof ProviderFailure && error.status === 404) return { outcome: 'removed' }; throw error }
+    if (!performDelete) return { outcome: 'uncertain', failureCode: 'disconnect_not_confirmed' }
+    if (emailChannel) {
+      const account = z.object({ email, organization: z.uuid(), is_managed_account: z.boolean().optional() }).parse(raw)
+      if (account.email !== context.email || account.organization !== context.workspace)
+        return { outcome: 'rejected', failureCode: 'disconnect_identity_mismatch' }
+      if (account.is_managed_account) return { outcome: 'rejected', failureCode: 'disconnect_managed_account' }
+      // Any campaign assignment blocks removal, including campaigns outside Covora.
+      const mappings = z.object({ items: z.array(z.unknown()), next_starting_after: z.string().nullable().optional() })
+        .parse(await request(`/account-campaign-mappings/${encodeURIComponent(context.email)}`))
+      if (mappings.items.length || mappings.next_starting_after) return { outcome: 'rejected', failureCode: 'disconnect_campaigns' }
+    } else {
+      const account = z.object({ id: remoteId, emailAddress: email, activeCampaigns: z.number().int().nonnegative() }).parse(raw)
+      if (account.id !== context.remoteAccount || account.emailAddress !== context.email)
+        return { outcome: 'rejected', failureCode: 'disconnect_identity_mismatch' }
+      if (account.activeCampaigns > 0) return { outcome: 'rejected', failureCode: 'disconnect_campaigns' }
+    }
+    deleteSent = true
+    await request(emailChannel ? accountPath : `/li_account/RemoveAccount/${context.remoteAccount}?force=false`, undefined, 'DELETE')
+    deleteAccepted = true
+    // A success response alone does not release the identity reservation.
+    try { await request(accountPath) }
+    catch (error) { if (error instanceof ProviderFailure && error.status === 404) return { outcome: 'removed' }; throw error }
+    return { outcome: 'uncertain', failureCode: 'disconnect_not_confirmed' }
+  } catch (error) {
+    const status = error instanceof ProviderFailure ? error.status : undefined
+    const rejected = performDelete && (!deleteSent || (!deleteAccepted && status !== undefined && [400,401,403,409,422,429].includes(status)))
+    return { outcome: rejected ? 'rejected' : 'uncertain', failureCode: status === 401 || status === 403 ? 'disconnect_access_denied'
+      : status === 409 ? 'disconnect_campaigns' : 'disconnect_not_confirmed' }
   }
 }
