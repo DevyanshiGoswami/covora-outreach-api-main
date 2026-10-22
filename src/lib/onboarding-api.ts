@@ -82,6 +82,7 @@ const connectionInput = z.union([
 const privateContext = z.object({ channel: channelSchema, email, workspace: z.string(), credential: z.string(),
   remoteSession: z.string().nullable(), remoteAccount: z.string().nullable(),
   expectedProfileUrl: z.string().nullable().optional(),
+  verifiedProfileUrl: z.string().nullable().optional(),
 })
 
 export function createOnboardingHandlers(config?: OnboardingApiConfig) {

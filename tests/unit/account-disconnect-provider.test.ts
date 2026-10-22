@@ -46,6 +46,49 @@ test('a timeout after DELETE is uncertain and subsequent checks never delete', a
     assert.equal(s.calls.some(c=>c.method==='DELETE'),false)
   }
 })
+test('LinkedIn login aliases can disconnect only the exact previously verified profile', async () => {
+  const linked: ConnectionContext = { ...scope, channel: 'linkedin', remoteAccount: '123',
+    verifiedProfileUrl: 'https://www.linkedin.com/in/test-person' }
+  for (const emailAddress of ['primary@example.test', null, undefined]) {
+    const s = stub([new Response(null, { status: 204 }),
+      { id: 123, emailAddress, profileUrl: 'https://linkedin.com/in/Test-Person/', activeCampaigns: 0 },
+      new Response(null, { status: 204 }), missing()])
+    assert.deepEqual(await disconnectAccount(linked, true, { key: 'synthetic', fetch: s.fetcher }), { outcome: 'removed' })
+    assert.deepEqual(s.calls.filter(c => c.method === 'DELETE'), [{ path: '/api/public/li_account/RemoveAccount/123?force=false', method: 'DELETE' }])
+  }
+  const matching = { id: 123, emailAddress: email, profileUrl: linked.verifiedProfileUrl, activeCampaigns: 0 }
+  for (const metadata of [
+    { ...matching, profileUrl: 'https://www.linkedin.com/in/someone-else' },
+    { ...matching, profileUrl: 'https://linkedin.com.evil.test/in/test-person' },
+    { ...matching, profileUrl: null }, { ...matching, profileUrl: undefined },
+    { ...matching, id: 456 }, { ...matching, activeCampaigns: 1 },
+  ]) {
+    const s = stub([new Response(null, { status: 204 }), metadata])
+    assert.equal((await disconnectAccount(linked, true, { key: 'synthetic', fetch: s.fetcher })).outcome, 'rejected')
+    assert.equal(s.calls.some(c => c.method === 'DELETE'), false)
+  }
+})
+test('missing or invalid saved LinkedIn profiles cannot authorize an alias mismatch', async () => {
+  for (const verifiedProfileUrl of [null, undefined, 'not-a-profile', 'https://example.test/in/test-person']) {
+    const s = stub([new Response(null, { status: 204 }),
+      { id: 123, emailAddress: 'primary@example.test', profileUrl: 'https://www.linkedin.com/in/test-person', activeCampaigns: 0 }])
+    assert.deepEqual(await disconnectAccount({ ...scope, channel: 'linkedin', remoteAccount: '123', verifiedProfileUrl }, true,
+      { key: 'synthetic', fetch: s.fetcher }), { outcome: 'rejected', failureCode: 'disconnect_identity_mismatch' })
+    assert.equal(s.calls.some(c => c.method === 'DELETE'), false)
+  }
+})
+test('LinkedIn uncertain deletion retains the reservation and never repeats DELETE', async () => {
+  const linked: ConnectionContext = { ...scope, channel: 'linkedin', remoteAccount: '123',
+    verifiedProfileUrl: 'https://www.linkedin.com/in/test-person' }
+  const metadata = { id: 123, emailAddress: 'primary@example.test', profileUrl: linked.verifiedProfileUrl, activeCampaigns: 0 }
+  const s = stub([new Response(null, { status: 204 }), metadata, new Error('network unavailable')])
+  assert.equal((await disconnectAccount(linked, true, { key: 'synthetic', fetch: s.fetcher })).outcome, 'uncertain')
+  for (const [observation, outcome] of [[metadata, 'uncertain'], [missing(), 'removed']] as const) {
+    const check = stub([new Response(null, { status: 204 }), observation])
+    assert.equal((await disconnectAccount(linked, false, { key: 'synthetic', fetch: check.fetcher })).outcome, outcome)
+    assert.equal(check.calls.some(c => c.method === 'DELETE'), false)
+  }
+})
 test('a successful DELETE followed by denied verification cannot become retryable', async () => {
   const s=stub([{id:workspace},account,{items:[]},new Response(null,{status:204}),new Response('',{status:403})])
   assert.equal((await disconnectAccount(scope,true,{key:'synthetic',fetch:s.fetcher})).outcome,'uncertain')

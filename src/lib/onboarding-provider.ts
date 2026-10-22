@@ -14,6 +14,7 @@ export type ConnectionContext = {
   channel: 'email' | 'linkedin'; email: string; workspace: string; credential: string
   remoteSession: string | null; remoteAccount: string | null
   expectedProfileUrl?: string | null
+  verifiedProfileUrl?: string | null
 }
 export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; log?: ProviderCallLogger }
 export type EmailProvider = 'google' | 'microsoft'
@@ -455,8 +456,21 @@ export async function disconnectAccount(context: ConnectionContext, performDelet
         .parse(await request(`/account-campaign-mappings/${encodeURIComponent(context.email)}`))
       if (mappings.items.length || mappings.next_starting_after) return { outcome: 'rejected', failureCode: 'disconnect_campaigns' }
     } else {
-      const account = z.object({ id: remoteId, emailAddress: email, activeCampaigns: z.number().int().nonnegative() }).parse(raw)
-      if (account.id !== context.remoteAccount || account.emailAddress !== context.email)
+      const account = z.object({ id: remoteId, emailAddress: z.string().nullish(), profileUrl: z.string().nullish(),
+        activeCampaigns: z.number().int().nonnegative() }).parse(raw)
+      // LinkedIn may report its primary email instead of the login alias used for
+      // consent. Match the profile saved on successful connection, within the
+      // same server-resolved sender/workspace. Never use a newly supplied URL.
+      let identityMatches = false
+      if (context.verifiedProfileUrl) {
+        try { identityMatches = !!account.profileUrl && linkedinProfileUrl(account.profileUrl) === linkedinProfileUrl(context.verifiedProfileUrl) }
+        catch { /* Invalid profile metadata cannot authorize deletion. */ }
+      } else {
+        // Older deployments may not return the verified profile yet. Retain the
+        // existing strict email check; an alias mismatch must remain blocked.
+        identityMatches = account.emailAddress?.trim().toLowerCase() === context.email
+      }
+      if (account.id !== context.remoteAccount || !identityMatches)
         return { outcome: 'rejected', failureCode: 'disconnect_identity_mismatch' }
       if (account.activeCampaigns > 0) return { outcome: 'rejected', failureCode: 'disconnect_campaigns' }
     }
