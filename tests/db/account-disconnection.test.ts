@@ -92,6 +92,62 @@ test('preview workspaces reject removal and disconnecting senders cannot be re-e
   assert.equal((await admin.from('outreach_reply_senders').update({enabled:true}).eq('id',sender.id)).error?.code,'22023')
 })
 
+test('LinkedIn disconnect reads only the saved profile for the leased sender and workspace', async t => {
+  const f = await fixture(t), id = await f.connect('linkedin')
+  const claim = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: id, p_action: 'disconnect' })
+  assert.ifError(claim.error)
+  const lease = claim.data![0].claim_token!
+  assert.equal((await f.member.supabase.rpc('read_outreach_disconnect', { p_id: id, p_lease: lease })).error?.code, '42501')
+  assert.equal((await admin.rpc('read_outreach_disconnect', { p_id: id, p_lease: randomUUID() })).data, null)
+  const read = await admin.rpc('read_outreach_disconnect', { p_id: id, p_lease: lease })
+  assert.ifError(read.error)
+  assert.equal((read.data as { verifiedProfileUrl: string }).verifiedProfileUrl, 'https://www.linkedin.com/in/test-person')
+  // Changing the binding invalidates the whole claim, not just the profile.
+  assert.ifError((await admin.from('outreach_reply_workspaces').update({ credential_ref: 'OUTREACH_HEYREACH_CHANGED' })
+    .eq('client_id', f.tenant.client.id).eq('channel', 'linkedin')).error)
+  assert.equal((await admin.rpc('read_outreach_disconnect', { p_id: id, p_lease: lease })).data, null)
+})
+
+test('LinkedIn disconnect API accepts a primary email alias only with the saved profile and identity', async t => {
+  const f = await fixture(t), id = await f.connect('linkedin'), env = loadTestEnv(), other = await createAdmin(t)
+  const connection = (await admin.from('outreach_connections').select('remote_account').eq('id', id).single()).data!
+  const workspace = (await admin.from('outreach_reply_workspaces').select('credential_ref').eq('client_id', f.tenant.client.id).eq('channel', 'linkedin').single()).data!
+  let removed = false, deletes = 0, calls = 0
+  let profileUrl = 'https://www.linkedin.com/in/someone-else'
+  const handlers = createOnboardingHandlers({ url: env.URL, anonKey: env.ANON, serviceKey: env.SERVICE, fetch,
+    credentials: { [workspace.credential_ref]: 'synthetic' }, providerFetch: async (input, init) => {
+      calls++
+      const url = new URL(String(input))
+      if (url.pathname.endsWith('/auth/CheckApiKey')) return new Response(null, { status: 204 })
+      if (url.pathname.endsWith('/li_account/GetById')) {
+        assert.equal(url.searchParams.get('accountId'), connection.remote_account)
+        return removed ? Response.json({}, { status: 404 }) : Response.json({ id: Number(connection.remote_account),
+          emailAddress: 'primary-alias@example.test', profileUrl, activeCampaigns: 0 })
+      }
+      assert.equal(url.pathname, '/api/public/li_account/RemoveAccount/' + connection.remote_account)
+      assert.equal(url.search, '?force=false'); assert.equal(init?.method, 'DELETE')
+      deletes++; removed = true; return new Response(null, { status: 204 })
+    } })
+  async function send(actor: typeof f.member) {
+    const token = (await actor.supabase.auth.getSession()).data.session!.access_token
+    return handlers.connection(new Request('http://localhost/api/onboarding/connections', { method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'disconnect', connectionId: id }) }))
+  }
+  assert.equal((await send(other)).status, 403); assert.equal(calls, 0)
+  const mismatch = await send(f.member)
+  assert.equal(mismatch.status, 200)
+  assert.equal((await mismatch.json()).failureCode, 'disconnect_identity_mismatch'); assert.equal(deletes, 0)
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', f.person.id)).data?.length, 1)
+  profileUrl = 'https://linkedin.com/in/Test-Person/'
+  const response = await send(f.member)
+  assert.equal(response.status, 200)
+  assert.deepEqual(await response.json(), { connectionId: id, state: 'disconnected', authUrl: null })
+  assert.equal(deletes, 1)
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', f.person.id)).data?.length, 0)
+  assert.equal((await send(f.member)).status, 200); assert.equal(deletes, 1)
+})
+
 test('a remote identity stays exclusive while removal is pending or uncertain',async t=>{
   const f=await fixture(t),id=await f.connect(),second=await createAdmin(t)
   await grantOutreachMembership(second.user.id,f.tenant.client.id,'client_member')
