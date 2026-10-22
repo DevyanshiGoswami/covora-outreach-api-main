@@ -9,7 +9,7 @@ const LEAD = '9d375705-20e1-4c5e-a0af-be175888827f'
 const JWT = 'synthetic-user-token'
 const user = { id: USER, aud: 'authenticated', role: 'authenticated', email: 'member@example.test', app_metadata: {}, user_metadata: {}, identities: [], created_at: '2026-10-03T00:00:00Z' }
 const lead = { id: LEAD, clientId: CLIENT, campaignId: CAMPAIGN, campaignName: 'Campaign', listId: null, listName: null, firstName: 'Jane', lastName: 'Sample', fullName: 'Jane Sample', company: 'Acme', jobTitle: 'CEO', location: null, email: 'jane@example.test', emailVerification: 'unknown', linkedinUrl: null, linkedinVerified: null, status: 'in_sequence', interest: null, lastActivityAt: null }
-const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], lists: [], filterOptionsTruncated: false }
+const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], lists: [], filterOptionsTruncated: false, audienceEnabled: false, locationOptions: { states: [], cities: [] } }
 function request(query = `clientId=${CLIENT}`, authorization = `Bearer ${JWT}`) {
   return new Request(`https://backend.invalid/api/outbound/leads?${query}`, { headers: { authorization, cookie: 'ignored' } })
 }
@@ -20,7 +20,7 @@ function harness(result: unknown = page, code = 200, authStatus = 200) {
     const path = new URL(req.url).pathname
     calls.push({ path, headers: req.headers, body: await req.text(), cache: req.cache })
     if (path === '/auth/v1/user') return Response.json(authStatus === 200 ? user : { error: 'private auth diagnostics' }, { status: authStatus })
-    assert.equal(path, '/rest/v1/rpc/list_outreach_leads')
+    assert.equal(path, '/rest/v1/rpc/list_outreach_leads_v2')
     return Response.json(result, { status: code })
   } })
   return { handlers, calls }
@@ -34,13 +34,13 @@ test('lead directory verifies bearer and binds the RPC to the same identity; pri
   assert.equal(response.headers.get('cache-control'), 'no-store')
   assert.equal(response.headers.get('vary'), 'Authorization')
   assert.equal(response.headers.get('access-control-allow-origin'), null)
-  assert.deepEqual(calls.map(call => call.path), ['/auth/v1/user', '/rest/v1/rpc/list_outreach_leads'])
+  assert.deepEqual(calls.map(call => call.path), ['/auth/v1/user', '/rest/v1/rpc/list_outreach_leads_v2'])
   for (const call of calls) {
     assert.equal(call.headers.get('authorization'), `Bearer ${JWT}`)
     assert.equal(call.headers.get('apikey'), 'public-key')
     assert.equal(call.cache, 'no-store')
   }
-  assert.deepEqual(JSON.parse(calls[1].body), { p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'priority', p_page: 1 })
+  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'priority', p_page: 1 })
 })
 
 test('auth denial and invalid filter requests never read leads; duplicate/unknown keys and malformed pages fail closed', async () => {
@@ -63,7 +63,7 @@ test('validated filters pass as bound RPC arguments and excessive pages accept l
   const { handlers, calls } = harness()
   const response = await handlers.GET(request(`clientId=${CLIENT}&q=%20Jane%20&role=owners-executives&company=Acme&campaign=${CAMPAIGN}&email=verified&linkedin=available&status=contacted&sort=name&page=1000000`))
   assert.equal(response.status, 200)
-  assert.deepEqual(JSON.parse(calls[1].body), { p_client_id: CLIENT, p_q: 'Jane', p_role: 'owners-executives', p_company: 'Acme', p_campaign: CAMPAIGN, p_email: 'verified', p_linkedin: 'available', p_status: 'contacted', p_sort: 'name', p_page: 1000000 })
+  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_client_id: CLIENT, p_q: 'Jane', p_role: 'owners-executives', p_company: 'Acme', p_campaign: CAMPAIGN, p_email: 'verified', p_linkedin: 'available', p_status: 'contacted', p_sort: 'name', p_page: 1000000 })
 })
 
 test('unexpected tenant, malformed DTO, inconsistent pagination and unsafe URLs are denied without exposing contents', async () => {
@@ -111,4 +111,24 @@ test('imported lead list filters accept live campaign overlays and reject missin
     assert.equal((await bad.handlers.GET(request(`clientId=${CLIENT}&list=${listId}`))).status,500)
   }
   assert.equal((await harness().handlers.GET(request(`clientId=${CLIENT}&list=bad`))).status,400)
+})
+
+test('audience and location inputs are bound to v2 and response location evidence is enforced', async () => {
+  const personLocation = { city: 'Austin', state: 'TX', country: 'US', status: 'known' }
+  const enriched = { ...page, audienceEnabled: true, leads: [{ ...lead, audience: 'hiring_partners', personLocation }], locationOptions: { states: [{ value: 'US|TX', label: 'TX, US', count: 1 }], cities: [{ value: 'US|TX|Austin', label: 'Austin, TX, US', count: 1 }] } }
+  const valid = harness(enriched)
+  assert.equal((await valid.handlers.GET(request(`clientId=${CLIENT}&audience=hiring_partners&state=US%7CTX&city=US%7CTX%7CAustin`))).status, 200)
+  assert.equal(JSON.parse(valid.calls[1].body).p_state, 'US|TX')
+  assert.equal(JSON.parse(valid.calls[1].body).p_city, 'US|TX|Austin')
+  for (const query of ['audience=other', `state=${'x'.repeat(251)}`, 'city=%0Ahidden']) {
+    const invalid = harness(enriched)
+    assert.equal((await invalid.handlers.GET(request(`clientId=${CLIENT}&${query}`))).status, 400)
+    assert.equal(invalid.calls.length, 1)
+  }
+  for (const bad of [{ ...enriched, leads: [{ ...enriched.leads[0], audience: 'athletes' }] },
+    { ...enriched, leads: [{ ...enriched.leads[0], personLocation: { ...personLocation, status: 'conflict' } }] },
+    { ...enriched, locationOptions: { ...enriched.locationOptions, states: [{ value: 'US|TX', label: 'TX', count: 2 }] } },
+    { ...enriched, leads: [{ ...enriched.leads[0], personLocation: null }] }]) {
+    assert.equal((await harness(bad).handlers.GET(request(`clientId=${CLIENT}&audience=hiring_partners&state=US%7CTX`))).status, 500)
+  }
 })

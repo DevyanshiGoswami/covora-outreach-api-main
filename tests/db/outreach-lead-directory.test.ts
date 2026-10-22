@@ -1,3 +1,4 @@
+import { compatibleDirectory } from '../helpers/lead-directory-compatibility.ts'
 import { testProjectId, testDatabaseContainer } from '../helpers/stack.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -25,7 +26,7 @@ async function fixture(t: TestContext) {
     return result.data!.map(row => row.id)
   }
   const list = async (query: Omit<Query, 'p_client_id'> = {}) => {
-    const result = await tenant.supabase.rpc('list_outreach_leads', { p_client_id: tenant.client.id, ...query })
+    const result = await compatibleDirectory(tenant.supabase, { p_client_id: tenant.client.id, ...query })
     assert.ifError(result.error)
     return result.data as unknown as OutboundLeadDirectory
   }
@@ -46,13 +47,13 @@ test('lead directory respects current membership, feature gates and explicit age
     assert.ok((await session.from('outreach_leads').update({ email_verification: 'verified' }).eq('client_id', own.tenant.client.id)).error)
   }
   for (const session of [foreign.tenant.supabase, unset.supabase, anonClient()]) {
-    assert.equal((await session.rpc('list_outreach_leads', { p_client_id: own.tenant.client.id })).error?.code, '42501')
+    assert.equal((await compatibleDirectory(session, { p_client_id: own.tenant.client.id })).error?.code, '42501')
   }
-  assert.ifError((await owner.supabase.rpc('list_outreach_leads', { p_client_id: own.tenant.client.id })).error)
+  assert.ifError((await compatibleDirectory(owner.supabase, { p_client_id: own.tenant.client.id })).error)
   assert.ifError((await admin.from('outreach_memberships').update({ state: 'revoked' }).eq('user_id', own.tenant.user.id)).error)
-  assert.equal((await own.tenant.supabase.rpc('list_outreach_leads', { p_client_id: own.tenant.client.id })).error?.code, '42501')
+  assert.equal((await compatibleDirectory(own.tenant.supabase, { p_client_id: own.tenant.client.id })).error?.code, '42501')
   assert.ifError((await admin.from('client_features').update({ enabled: false }).eq('client_id', own.tenant.client.id)).error)
-  assert.equal((await owner.supabase.rpc('list_outreach_leads', { p_client_id: own.tenant.client.id })).error?.code, '42501')
+  assert.equal((await compatibleDirectory(owner.supabase, { p_client_id: own.tenant.client.id })).error?.code, '42501')
 })
 
 test('lead directory only exposes neutral assigned fields and keeps existing results projection unchanged', async t => {
@@ -144,7 +145,7 @@ test('large-workspace company facets are bounded honestly and retain selected op
 test('RPC independently rejects malformed filters and schema rejects unsafe profile links or manufactured evidence', async t => {
   const f = await fixture(t)
   for (const input of [{ p_page: 0 }, { p_page: 1000001 }, { p_role: 'owner' }, { p_email: 'true' }, { p_linkedin: 'yes' }, { p_status: 'anything' }, { p_sort: 'email;drop' }, { p_q: 'a'.repeat(201) }, { p_company: 'a'.repeat(501) }]) {
-    assert.equal((await f.tenant.supabase.rpc('list_outreach_leads', { p_client_id: f.tenant.client.id, ...input })).error?.code, '22023')
+    assert.equal((await compatibleDirectory(f.tenant.supabase, { p_client_id: f.tenant.client.id, ...input })).error?.code, '22023')
   }
   for (const values of [{ linkedin_url: 'javascript:alert(1)' }, { linkedin_url: 'https://evil.test/in/person' }, { linkedin_url: 'https://www.linkedin.com/in/person?redirect=evil' }, { linkedin_verified: true }, { email_verification: 'yes' }, { role_category: 'chief' }]) {
     const inserted = await admin.from('outreach_leads').insert({ client_id: f.tenant.client.id, campaign_id: f.campaignId, email: 'invalid@example.test', ...values })

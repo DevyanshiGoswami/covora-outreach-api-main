@@ -1,3 +1,4 @@
+import { compatibleDirectory } from '../helpers/lead-directory-compatibility.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { test, type TestContext } from 'node:test'
@@ -17,7 +18,7 @@ async function fixture(t: TestContext, size = 2) {
   const { rows } = prepareLegacyLeadImport(Array.from({ length: size }, (_, i) => ({ firstName: `Person ${String(i).padStart(5,'0')}`, lastName: 'Sample', company: `Company ${i % 20}`, title: 'CEO', location: 'Boston', email: `fixture-${i}@example.test`, linkedinUrl: `https://www.linkedin.com/in/sample-${i}`, verified: true, verifiedReason: 'Prior source role check' })), { clientId: tenant.client.id, listId })
   for (let i=0;i<rows.length;i+=1000) assert.ifError((await admin.from('outreach_imported_leads').insert(rows.slice(i,i+1000))).error)
   async function list(extra: Partial<Database['public']['Functions']['list_outreach_leads']['Args']> = {}) {
-    const result = await tenant.supabase.rpc('list_outreach_leads', { p_client_id: tenant.client.id, ...extra })
+    const result = await compatibleDirectory(tenant.supabase, { p_client_id: tenant.client.id, ...extra })
     assert.ifError(result.error)
     return result.data as unknown as OutboundLeadDirectory
   }
@@ -34,14 +35,14 @@ test('imported lists preserve tenant authorization and deny all raw client acces
       assert.ok((await session.from(table).delete().eq('client_id',a.tenant.client.id)).error)
     }
   }
-  for (const session of [b.tenant.supabase,unassigned.supabase,anonClient()]) assert.equal((await session.rpc('list_outreach_leads',{p_client_id:a.tenant.client.id})).error?.code,'42501')
-  assert.ifError((await owner.supabase.rpc('list_outreach_leads',{p_client_id:a.tenant.client.id})).error)
+  for (const session of [b.tenant.supabase,unassigned.supabase,anonClient()]) assert.equal((await compatibleDirectory(session,{p_client_id:a.tenant.client.id})).error?.code,'42501')
+  assert.ifError((await compatibleDirectory(owner.supabase,{p_client_id:a.tenant.client.id})).error)
   const denied = await admin.from('outreach_imported_leads').insert({ ...a.rows[0], id: randomUUID(), client_id: b.tenant.client.id, source_row_id: 'b'.repeat(64), email: 'other@example.test' })
   assert.equal(denied.error?.code,'23503')
   assert.ifError((await admin.from('outreach_memberships').update({state:'suspended'}).eq('user_id',a.tenant.user.id)).error)
-  assert.equal((await a.tenant.supabase.rpc('list_outreach_leads',{p_client_id:a.tenant.client.id})).error?.code,'42501')
+  assert.equal((await compatibleDirectory(a.tenant.supabase,{p_client_id:a.tenant.client.id})).error?.code,'42501')
   assert.ifError((await admin.from('client_features').update({enabled:false}).eq('client_id',a.tenant.client.id)).error)
-  assert.equal((await owner.supabase.rpc('list_outreach_leads',{p_client_id:a.tenant.client.id})).error?.code,'42501')
+  assert.equal((await compatibleDirectory(owner.supabase,{p_client_id:a.tenant.client.id})).error?.code,'42501')
 })
 
 test('imported lists union with campaign leads without affecting campaign analytics or existing projections', async t => {

@@ -1,3 +1,4 @@
+import { compatibleDirectory } from '../helpers/lead-directory-compatibility.ts'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import test from 'node:test'
@@ -33,7 +34,7 @@ test('escrow is absent from client counts, search, filters and pages, including 
   const f = await fixture(t), owner = await createAdmin(t)
   await grantOutreachOwner(owner.user.id)
   for (const session of [f.tenant.supabase, owner.supabase]) {
-    const listed = await session.rpc('list_outreach_leads', { p_client_id: f.tenant.client.id })
+    const listed = await compatibleDirectory(session, { p_client_id: f.tenant.client.id })
     assert.ifError(listed.error)
     const page = listed.data as unknown as OutboundLeadDirectory
     assert.equal(page.total,2)
@@ -48,12 +49,12 @@ test('escrow is absent from client counts, search, filters and pages, including 
     assert.equal(page.leads[0].contactPreference,'linkedin_first')
     assert.doesNotMatch(JSON.stringify(page),/Hidden|Private research|never-publish|private_provider|review_state|localhost/)
     for (const filters of [{p_q:'Hidden'}, {p_list:f.hiddenList}, {p_company:'Hidden company 0'}]) {
-      const r = await session.rpc('list_outreach_leads', { p_client_id:f.tenant.client.id,...filters })
+      const r = await compatibleDirectory(session, { p_client_id:f.tenant.client.id,...filters })
       assert.ifError(r.error)
       assert.equal((r.data as unknown as OutboundLeadDirectory).total,0)
       assert.ok(!(r.data as unknown as OutboundLeadDirectory).lists.some(row => row.id===f.hiddenList))
     }
-    const byName = await session.rpc('list_outreach_leads', { p_client_id:f.tenant.client.id,p_sort:'name',p_page:1000000 })
+    const byName = await compatibleDirectory(session, { p_client_id:f.tenant.client.id,p_sort:'name',p_page:1000000 })
     assert.deepEqual((byName.data as unknown as OutboundLeadDirectory).leads.map(row => row.priorityRank),[2,1])
     assert.equal((byName.data as unknown as OutboundLeadDirectory).page,1)
   }

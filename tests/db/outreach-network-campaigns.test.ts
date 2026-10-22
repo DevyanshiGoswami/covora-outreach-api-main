@@ -1,3 +1,4 @@
+import { compatibleDirectory } from '../helpers/lead-directory-compatibility.ts'
 import assert from 'node:assert/strict'
 import {randomUUID} from 'node:crypto'
 import test from 'node:test'
@@ -62,7 +63,7 @@ test('reviewed directory overlays live activity without duplicating, losing rank
  {campaign_id:campaign,client_id:tenant.client.id,email:'held@example.test',first_name:'Provider held',email_verification:'unknown',status:'contacted'},
  ])).error)
  const read=async(args:Record<string,string>={})=>{
-  const response=await tenant.supabase.rpc('list_outreach_leads',{p_client_id:tenant.client.id,...args});assert.ifError(response.error)
+  const response=await compatibleDirectory(tenant.supabase,{p_client_id:tenant.client.id,...args});assert.ifError(response.error)
   return response.data as unknown as {total:number;leads:{id:string;firstName:string;campaignId:string;status:string;lastActivityAt:string;priorityRank:number;emailVerification:string;emailValidation?:string}[];summary:{verifiedEmail:number};campaigns:{id:string}[]}
  }
  const page=await read()
