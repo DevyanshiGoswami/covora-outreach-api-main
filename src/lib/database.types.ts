@@ -304,13 +304,13 @@ isOneToOne: false
                   ]
                 },"outreach_connections": {
                   Row: {
-                    "actor_id": string,"auth_url": string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at": string,"expected_email": string,"expires_at": string,"id": string,"lease_id": string | null,"lease_until": string | null,"next_poll_at": string | null,"person_id": string,"remote_account": string | null,"remote_session": string | null,"state": string,"updated_at": string,"workspace_version": number
+                    "actor_id": string,"auth_url": string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at": string,"expected_email": string,"expected_profile_url": string | null,"expires_at": string,"id": string,"lease_id": string | null,"lease_until": string | null,"next_poll_at": string | null,"person_id": string,"remote_account": string | null,"remote_session": string | null,"state": string,"updated_at": string,"workspace_version": number
                   }
                   Insert: {
-                    "actor_id": string,"auth_url"?: string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at"?: string,"expected_email": string,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id": string,"remote_account"?: string | null,"remote_session"?: string | null,"state": string,"updated_at"?: string,"workspace_version": number
+                    "actor_id": string,"auth_url"?: string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at"?: string,"expected_email": string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id": string,"remote_account"?: string | null,"remote_session"?: string | null,"state": string,"updated_at"?: string,"workspace_version": number
                   }
                   Update: {
-                    "actor_id"?: string,"auth_url"?: string | null,"authority_stamp"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"expected_email"?: string,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id"?: string,"remote_account"?: string | null,"remote_session"?: string | null,"state"?: string,"updated_at"?: string,"workspace_version"?: number
+                    "actor_id"?: string,"auth_url"?: string | null,"authority_stamp"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"expected_email"?: string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id"?: string,"remote_account"?: string | null,"remote_session"?: string | null,"state"?: string,"updated_at"?: string,"workspace_version"?: number
                   }
                   Relationships: [
                     {
@@ -720,6 +720,25 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_provider_calls": {
+                  Row: {
+                    "channel": string,"connection_id": string | null,"created_at": string,"duration_ms": number,"error_excerpt": string | null,"http_status": number | null,"id": number,"integration_id": string | null,"method": string,"operation": string,"outcome": string,"request_id": string | null,"source": string
+                  }
+                  Insert: {
+                    "channel": string,"connection_id"?: string | null,"created_at"?: string,"duration_ms": number,"error_excerpt"?: string | null,"http_status"?: number | null,"id"?: never,"integration_id"?: string | null,"method": string,"operation": string,"outcome": string,"request_id"?: string | null,"source": string
+                  }
+                  Update: {
+                    "channel"?: string,"connection_id"?: string | null,"created_at"?: string,"duration_ms"?: number,"error_excerpt"?: string | null,"http_status"?: number | null,"id"?: never,"integration_id"?: string | null,"method"?: string,"operation"?: string,"outcome"?: string,"request_id"?: string | null,"source"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_provider_calls_connection_id_fkey"
+      columns: ["connection_id"]
+isOneToOne: false
+      referencedRelation: "outreach_connections"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_reply_commands": {
                   Row: {
                     "actor_user_id": string,"authority_stamp": string,"body_text": string,"channel": string,"claim_token": string | null,"client_id": string,"conversation_id": string,"conversation_version": number,"created_at": string,"error_code": string | null,"expires_at": string | null,"id": string,"latest_message_id": string,"remote_message_id": string | null,"sender_id": string,"sender_version": number,"status": string,"updated_at": string,"workspace_version": number
@@ -1029,11 +1048,20 @@ isOneToOne: false
 "finish_outreach_connection":
 { Args: { "p_address"?: string,"p_auth_url"?: string,"p_id": string,"p_lease": string,"p_remote_account"?: string,"p_remote_session"?: string,"p_state": string }; Returns: boolean
                            },
+"finish_outreach_disconnect":
+{ Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
+                           },
 "finish_outreach_email_review":
+{ Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
+                           },
+"finish_outreach_email_switch":
 { Args: { "p_id": string,"p_lease": string,"p_outcome": string }; Returns: boolean
                            },
 "finish_outreach_lead_alert":
 { Args: { "p_claim_token": string,"p_delivery_id": string,"p_error_code"?: string,"p_status": string }; Returns: boolean
+                           },
+"finish_outreach_linkedin_review":
+{ Args: { "p_id": string,"p_lease": string,"p_outcome": string,"p_remote_account"?: string }; Returns: boolean
                            },
 "finish_outreach_reply":
 { Args: { "p_claim_token": string,"p_command_id": string,"p_error_code"?: string,"p_remote_message_id"?: string,"p_status": string }; Returns: boolean
@@ -1089,7 +1117,27 @@ isOneToOne: false
               "claim_token": string,"connection_id": string
             }[]
                            },
+"prepare_outreach_disconnect":
+{ Args: { "p_action": string,"p_connection": string }; Returns: {
+              "claim_token": string,"connection_id": string,"perform_delete": boolean
+            }[]
+                           },
 "prepare_outreach_email_review":
+{ Args: { "p_person": string }; Returns: {
+              "claim_token": string,"connection_id": string
+            }[]
+                           },
+"prepare_outreach_email_switch":
+{ Args: { "p_person": string }; Returns: {
+              "claim_token": string,"connection_id": string
+            }[]
+                           },
+"prepare_outreach_linkedin_cookies":
+{ Args: { "p_email": string,"p_person": string,"p_profile": string }; Returns: {
+              "claim_token": string,"connection_id": string
+            }[]
+                           },
+"prepare_outreach_linkedin_review":
 { Args: { "p_person": string }; Returns: {
               "claim_token": string,"connection_id": string
             }[]
@@ -1108,11 +1156,17 @@ isOneToOne: false
 "read_outreach_conversation":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_client_id": string,"p_conversation_id": string,"p_limit"?: number }; Returns: Json
                            },
+"read_outreach_disconnect":
+{ Args: { "p_id": string,"p_lease": string }; Returns: Json
+                           },
 "read_outreach_email_review":
 { Args: { "p_id": string,"p_lease": string }; Returns: Json
                            },
 "read_outreach_integration_key":
 { Args: { "p_ref": string }; Returns: string
+                           },
+"read_outreach_linkedin_review":
+{ Args: { "p_id": string,"p_lease": string }; Returns: Json
                            },
 "read_outreach_reply":
 { Args: { "p_client_id": string,"p_command_id": string,"p_conversation_id": string }; Returns: Json

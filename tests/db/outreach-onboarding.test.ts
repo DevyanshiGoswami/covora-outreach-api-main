@@ -14,10 +14,9 @@ function config(providerFetch: typeof fetch = async () => { throw new Error('Une
   return { url: env.URL, anonKey: env.ANON, serviceKey: env.SERVICE, fetch, providerFetch,
     credentials: { OUTREACH_INSTANTLY_TEST: 'synthetic', OUTREACH_HEYREACH_TEST: 'synthetic' } }
 }
-async function setup(t: Parameters<typeof createTenant>[0]) {
+async function setup(t: Parameters<typeof createTenant>[0], workspace: string = randomUUID()) {
   const tenant = await createTenant(t, { features: ['outreach_app'] })
   await grantOutreachMembership(tenant.user.id, tenant.client.id)
-  const workspace = randomUUID()
   assert.ifError((await admin.from('outreach_account_workspaces').insert({ client_id: tenant.client.id, credential_ref: 'OUTREACH_INSTANTLY_TEST', remote_workspace_id: workspace, enabled: true })).error)
   const person = await tenant.supabase.rpc('create_outreach_person', { p_client_id: tenant.client.id, p_name: 'Test person', p_email: tenant.user.email })
   assert.ifError(person.error)
@@ -27,6 +26,39 @@ async function request(session: ReturnType<typeof anonClient>, path: string, bod
   const token = (await session.auth.getSession()).data.session!.access_token
   return new Request(`http://localhost/api/onboarding/${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
 }
+test('LinkedIn progress is tenant guarded and a disconnected null-profile response finishes the pending attempt', async t => {
+  const tenant = await setup(t), foreign = await setup(t, tenant.workspace)
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({ client_id: tenant.client.id, channel: 'linkedin', credential_ref: 'OUTREACH_HEYREACH_TEST', remote_workspace_id: randomUUID(), enabled: true })).error)
+  let status = 'Connecting', calls = 0
+  const handlers = createOnboardingHandlers(config(async input => {
+    calls++
+    const path = new URL(String(input)).pathname
+    if (path.endsWith('/GetAll')) return Response.json({ totalCount: 0, items: [] })
+    if (path.endsWith('/Connect')) return Response.json({ linkedInAccountId: 76543 })
+    if (path.endsWith('/GetAccountStatus/76543')) return Response.json({ accountId: 76543, status, profile: { fullName: null, email: null, profileUrl: null } })
+    throw Error('Unexpected provider call')
+  }))
+  const start = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', channel: 'linkedin', personId: tenant.person, email: tenant.user.email, password: 'synthetic-password', country: 'US' }))
+  assert.equal(start.status, 200)
+  assert.equal((await start.json()).nextStep, 'connecting')
+  const saved = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).eq('channel', 'linkedin').single()
+  assert.ifError(saved.error)
+  const poll = { action: 'poll', channel: 'linkedin', personId: tenant.person }
+  const beforeDenied = calls
+  assert.equal((await handlers.connection(await request(foreign.supabase, 'connections', poll))).status, 403)
+  assert.equal(calls, beforeDenied)
+  for (const [remote, expectedState, nextStep] of [['Connecting', 'pending', 'connecting'], ['PinRequired', 'pending', 'verification_code'], ['Syncing', 'pending', 'syncing'], ['Disconnected', 'failed', undefined]]) {
+    status = remote!
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', saved.data!.id)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', poll))
+    assert.equal(response.status, 200)
+    const result = await response.json()
+    assert.equal(result.state, expectedState); assert.equal(result.nextStep, nextStep)
+    for (const secret of ['76543', 'synthetic-password', 'profileUrl', 'PinRequired']) assert.ok(!JSON.stringify(result).includes(secret))
+  }
+  const people = peopleSchema.parse((await tenant.supabase.rpc('list_outreach_people', { p_client: tenant.client.id })).data)
+  assert.equal(people.find(person => person.id === tenant.person)!.connections[0].state, 'failed')
+})
 test('owner creates clients; other roles cannot; direct private table/RPC access denied', async t => {
   const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   const id = randomUUID(); t.after(async () => { await admin.from('clients').delete().eq('id', id) })
@@ -112,6 +144,57 @@ test('Google API flow is idempotent, persists a consumed result, and does not en
   assert.equal((await admin.from('outreach_reply_senders').select('id').eq('client_id', tenant.client.id)).data!.length, 0)
   const body = await repeated.text(); for (const secret of ['synthetic', 'credential', 'remote_session', 'workspace']) assert.ok(!body.includes(secret))
 })
+test('Microsoft API flow returns a Microsoft sign-in link and connects the expected mailbox', async t => {
+  const tenant = await setup(t); const paths: string[] = []
+  const authUrl = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=synthetic&state=test'
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname; paths.push(path)
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) return Response.json({ session_id: randomUUID(), auth_url: authUrl, expires_at: new Date(Date.now()+600000).toISOString() })
+    if (path.includes('/oauth/session/status/')) return Response.json({ status: 'success', email: tenant.user.email, account_id: tenant.user.email })
+    if (path.includes('/accounts/')) return Response.json({ email: tenant.user.email, organization: tenant.workspace, status: 1, setup_pending: false })
+    throw new Error('Unexpected provider path')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const started = await handlers.connection(await request(tenant.supabase, 'connections', start)); assert.equal(started.status, 200, await started.clone().text())
+  assert.deepEqual(await started.json().then(body => [body.state, body.authUrl]), ['pending', authUrl])
+  assert.ok(paths.some(path => path.endsWith('/oauth/microsoft/init'))); assert.ok(!paths.some(path => path.endsWith('/oauth/google/init')))
+  const saved = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).single(); assert.ifError(saved.error)
+  await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', saved.data!.id)
+  const completed = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'email' }))
+  assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json()).state, 'connected')
+})
+test('provider calls are recorded per connection with masked errors and stay server-only', async t => {
+  const tenant = await setup(t)
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace }, { headers: { 'x-request-id': 'req-ws' } })
+    if (path.endsWith('/oauth/google/init')) return Response.json({ message: `Temporarily refused synthetic for ${tenant.user.email}` }, { status: 403, headers: { 'x-request-id': 'req-init' } })
+    throw new Error('Unexpected provider path')
+  }))
+  const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', personId: tenant.person, channel: 'email' }))
+  assert.equal(response.status, 200, await response.clone().text())
+  const connection = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).single(); assert.ifError(connection.error)
+  const calls = await admin.from('outreach_provider_calls').select('*').eq('connection_id', connection.data!.id).order('id'); assert.ifError(calls.error)
+  assert.deepEqual(calls.data!.map(row => [row.source, row.channel, row.method, row.operation, row.http_status, row.outcome, row.request_id]), [
+    ['connection', 'email', 'GET', '/workspaces/current', 200, 'ok', 'x-request-id: req-ws'],
+    ['connection', 'email', 'POST', '/oauth/google/init', 403, 'http_error', 'x-request-id: req-init']])
+  assert.match(calls.data![1].error_excerpt!, /Temporarily refused \[redacted\] for \[email\]/)
+  const stored = JSON.stringify(calls.data); for (const secret of ['synthetic', tenant.user.email!]) assert.ok(!stored.includes(secret), secret)
+  for (const client of [tenant.supabase, anonClient()]) {
+    assert.equal((await client.from('outreach_provider_calls').select('*')).error?.code, '42501')
+    assert.equal((await client.from('outreach_provider_calls').insert({ source: 'probe', channel: 'email', method: 'GET', operation: '/x', outcome: 'ok', duration_ms: 1 })).error?.code, '42501')
+  }
+})
+test('stored sign-in links must come from Google or Microsoft', async t => {
+  const tenant = await setup(t)
+  const started = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(started.error)
+  const claim = started.data![0]
+  const rejected = await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token, p_state: 'pending', p_auth_url: 'https://login.microsoftonline.com.evil.test/common/oauth2/v2.0/authorize?state=x' })
+  assert.equal(rejected.error?.code, '22023')
+  const accepted = await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token, p_state: 'pending', p_auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=x' })
+  assert.ifError(accepted.error); assert.equal(accepted.data, true)
+})
 test('connection leases fence concurrent consumption, revoked authority and lost responses', async t => {
   const tenant = await setup(t)
   const begin = { p_person: tenant.person, p_channel: 'email', p_action: 'start' }
@@ -166,13 +249,22 @@ test('LinkedIn PIN flow completes with a disabled sender binding and no credenti
     const path = new URL(String(url)).pathname
     if (path.endsWith('/Connect')) { connectCalls++; return Response.json({ linkedInAccountId: '123' }) }
     if (path.endsWith('/SubmitPin')) { assert.equal(JSON.parse(String(init?.body)).accountId, 123); pinCalls++; connected = true; return new Response(null, { status: 204 }) }
-    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'Connecting', profile: { profileUrl: 'https://www.linkedin.com/in/synthetic-person' } })
+    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'PinRequired', profile: { profileUrl: connected ? 'https://www.linkedin.com/in/synthetic-person' : null } })
     throw new Error('Unexpected provider path')
   }))
   const started = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', personId: tenant.person, channel: 'linkedin', email: tenant.user.email, password: 'synthetic-password-never-stored', country: 'US' }))
   assert.equal(started.status, 200, await started.clone().text())
   async function release() { assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('person_id', tenant.person)).error) }
   await release()
+  const awaiting = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'linkedin' }))
+  assert.equal((await awaiting.json()).nextStep, 'verification_code')
+  const reserved = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'linkedin', p_action: 'pin' })
+  assert.ifError(reserved.error)
+  const claim = reserved.data![0]; assert.ok(claim.claim_token)
+  const busy = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
+  assert.equal((await busy.json()).failureCode, 'linkedin_check_in_progress'); assert.equal(pinCalls, 0)
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token!, p_state: 'pending' })).data, true)
+  // Submit immediately after discovering the code request, inside the read cooldown.
   const pin = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
   assert.equal(pin.status, 200, await pin.clone().text()); assert.equal(pinCalls, 1)
   await release()
@@ -245,6 +337,59 @@ test('review separates absence after expiry from absence during consent and unav
   const restart = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(restart.error); assert.ok(restart.data![0].claim_token)
 })
 
+test('rejected email initialization can be reviewed and retried without a consent wait', async t => {
+  const tenant = await setup(t); let initCalls = 0; let lookupStatus = 503
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) {
+      initCalls++
+      return initCalls === 1 ? Response.json({ message: 'Invalid scope. Required: accounts:create. Found: accounts:read' }, { status: 401 })
+        : Response.json({ session_id: randomUUID(), auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=test', expires_at: new Date(Date.now()+600000).toISOString() })
+    }
+    if (path.includes('/accounts/')) return Response.json({}, { status: lookupStatus })
+    throw new Error('Review must not poll or replay OAuth')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const rejected = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal(rejected.status, 200)
+  const failure = await rejected.json(); assert.equal(failure.state, 'failed'); assert.equal(failure.failureCode, 'account_create_required')
+  assert.ok(Date.parse(failure.expiresAt) > Date.now())
+  async function review() {
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', failure.connectionId)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' }))
+    assert.equal(response.status, 200); return response.json()
+  }
+  // A transport failure remains unverified even when the rejected attempt has
+  // no consent deadline. Never replace missing proof with a connected badge.
+  const unavailable = await review(); assert.equal(unavailable.state, 'uncertain'); assert.equal(unavailable.reviewStatus, 'unavailable')
+  assert.ok(Date.parse(unavailable.expiresAt) <= Date.now())
+  const blocked = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal((await blocked.json()).state, 'uncertain'); assert.equal(initCalls, 1)
+  lookupStatus = 404
+  const missing = await review(); assert.equal(missing.state, 'expired'); assert.equal(missing.reviewStatus, 'missing')
+  assert.equal(initCalls, 1)
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-31000).toISOString() }).eq('id', failure.connectionId)).error)
+  const retry = await handlers.connection(await request(tenant.supabase, 'connections', start))
+  assert.equal(retry.status, 200); assert.equal((await retry.json()).state, 'pending'); assert.equal(initCalls, 2)
+})
+
+test('a failed attempt with a recorded sign-in session keeps its original deadline', async t => {
+  const tenant = await setup(t)
+  const start = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(start.error)
+  const claim = start.data![0]
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token!, p_state: 'failed', p_remote_session: randomUUID() })).data, true)
+  const before = await admin.from('outreach_connections').select('expires_at').eq('id', claim.connection_id).single(); assert.ifError(before.error)
+  const handlers = createOnboardingHandlers(config(async url => new URL(String(url)).pathname.endsWith('/workspaces/current')
+    ? Response.json({ id: tenant.workspace }) : Response.json({}, { status: 404 })))
+  for (let i = 0; i < 2; i++) {
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: null }).eq('id', claim.connection_id)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'review', personId: tenant.person, channel: 'email' }))
+    assert.equal(response.status, 200)
+    const waiting = await response.json(); assert.equal(waiting.state, 'uncertain'); assert.equal(waiting.reviewStatus, 'waiting'); assert.equal(waiting.expiresAt, before.data!.expires_at)
+  }
+})
+
 test('review enforces self and tenant permissions, fences concurrent/revoked/changed-workspace completions', async t => {
   const tenant = await uncertainEmail(t), owner = await createAdmin(t), other = await createAdmin(t)
   await grantOutreachOwner(owner.user.id)
@@ -265,4 +410,180 @@ test('review enforces self and tenant permissions, fences concurrent/revoked/cha
   await grantOutreachMembership(tenant.user.id, tenant.client.id, 'client_viewer')
   assert.equal((await tenant.supabase.rpc('prepare_outreach_email_review', args)).error?.code, '42501')
   assert.equal((await admin.rpc('finish_outreach_email_review', { p_id: tenant.id, p_lease: renewed.data![0].claim_token!, p_outcome: 'connected' })).data, false)
+})
+
+test('Microsoft pending sign-in is resumed without a second initialization or provider switch', async t => {
+  const tenant = await setup(t); let calls = 0
+  const url = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=synthetic'
+  const handlers = createOnboardingHandlers(config(async input => {
+    const path = new URL(String(input)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace })
+    if (path.endsWith('/oauth/microsoft/init')) { calls++; return Response.json({ session_id: randomUUID(), auth_url: url, expires_at: new Date(Date.now()+600000).toISOString() }) }
+    throw new Error('Must not start another provider or consume status early')
+  }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  const first = await handlers.connection(await request(tenant.supabase, 'connections', start)); assert.equal(first.status, 200)
+  const repeated = await handlers.connection(await request(tenant.supabase, 'connections', { ...start, provider: 'google' })); assert.equal(repeated.status, 200)
+  assert.equal((await repeated.json()).authUrl, url); assert.equal(calls, 1)
+  const resumed = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', channel: 'email', personId: tenant.person }))
+  assert.equal(resumed.status, 200); assert.equal((await resumed.json()).authUrl, url); assert.equal(calls, 1)
+})
+test('Microsoft selection preserves tenant, role and input authorization before provider calls', async t => {
+  const tenant = await setup(t); const outsider = await createTenant(t, { features: ['outreach_app'] }); let calls = 0
+  await grantOutreachMembership(outsider.user.id, outsider.client.id)
+  const handlers = createOnboardingHandlers(config(async () => { calls++; throw new Error('No provider calls allowed') }))
+  const start = { action: 'start', personId: tenant.person, channel: 'email', provider: 'microsoft' }
+  assert.equal((await handlers.connection(await request(outsider.supabase, 'connections', start))).status, 403)
+  await grantOutreachMembership(tenant.user.id, tenant.client.id, 'client_viewer')
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', start))).status, 403)
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', { ...start, provider: 'other' }))).status, 400)
+  assert.equal((await handlers.connection(await request(tenant.supabase, 'connections', { ...start, action: 'poll' }))).status, 400)
+  assert.equal(calls, 0)
+})
+
+const sessionCookies = [{name:'li_at',value:'synthetic-cookie-secret',domain:'.linkedin.com',path:'/'},{name:'JSESSIONID',value:'synthetic-jsession-secret',domain:'.linkedin.com',path:'/'}]
+async function cookieSetup(t: Parameters<typeof createTenant>[0], shared?: {workspace:string;linkedinWorkspace:string}) {
+  const tenant=await setup(t, shared?.workspace)
+  const linkedinWorkspace=shared?.linkedinWorkspace ?? randomUUID()
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({client_id:tenant.client.id,channel:'linkedin',credential_ref:'OUTREACH_HEYREACH_TEST',remote_workspace_id:linkedinWorkspace,enabled:true})).error)
+  return {...tenant,linkedinWorkspace}
+}
+/** Answers the sender list read before every LinkedIn connect, so tests can count connect calls alone. */
+const withSenders=(handler:typeof fetch):typeof fetch=>async(input,init)=>String(input).endsWith('/li_account/GetAll')?Response.json({totalCount:0,items:[]}):handler(input,init)
+function cookieBody(personId:string,email:string) {return {action:'start',channel:'linkedin',personId,email,method:'cookies',cookies:sessionCookies,country:'US',profileUrl:'https://www.linkedin.com/in/test-person',userAgent:'Synthetic Chrome'}}
+
+test('cookie API persists only the expected public profile, prevents duplicate starts and verifies completion',async t=>{
+  const tenant=await cookieSetup(t);let starts=0
+  const h=createOnboardingHandlers(config(async(input,init)=>{
+    if(String(input).endsWith('/ConnectWithCookies')){starts++;const body=JSON.parse(String(init?.body));assert.deepEqual(body.cookies,sessionCookies);assert.equal(body.password,undefined);return Response.json({linkedInAccountId:4321})}
+    return Response.json({accountId:4321,status:'Connected',profile:{profileUrl:'https://linkedin.com/in/Test-Person/'}})
+  }))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  const first=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(first.status,200);assert.equal((await first.json()).state,'pending')
+  const repeated=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(repeated.status,200);assert.equal(starts,1)
+  const saved=await admin.from('outreach_connections').select('*').eq('person_id',tenant.person).single();assert.ifError(saved.error);assert.equal(saved.data?.expected_profile_url,body.profileUrl)
+  assert.ok(!JSON.stringify(saved.data).includes('synthetic-cookie-secret'))
+  await admin.from('outreach_connections').update({next_poll_at:null}).eq('person_id',tenant.person)
+  const complete=await h.connection(await request(tenant.supabase,'connections',{action:'poll',channel:'linkedin',personId:tenant.person}));assert.equal(complete.status,200);assert.equal((await complete.json()).state,'connected')
+  const sender=await admin.from('outreach_reply_senders').select('sender_address,enabled').eq('client_id',tenant.client.id).single();assert.ifError(sender.error);assert.equal(sender.data?.sender_address,body.profileUrl);assert.equal(sender.data?.enabled,false)
+  const people=await h.people(await request(tenant.supabase,`people?clientId=${tenant.client.id}`));const text=await people.text();assert.ok(!text.includes('synthetic-cookie-secret'));assert.ok(!text.includes('expected_profile_url'))
+})
+
+test('cookie starts deny foreign tenants, viewers and malformed input before provider calls',async t=>{
+  const tenant=await cookieSetup(t),other=await createTenant(t,{features:['outreach_app']});let calls=0
+  await grantOutreachMembership(other.user.id,other.client.id)
+  const h=createOnboardingHandlers(config(async()=>{calls++;return Response.json({linkedInAccountId:4322})}))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  assert.equal((await h.connection(await request(other.supabase,'connections',body))).status,403)
+  await grantOutreachMembership(tenant.user.id,tenant.client.id,'client_viewer')
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',body))).status,403)
+  await grantOutreachMembership(tenant.user.id,tenant.client.id,'client_admin')
+  for(const change of [{cookies:[]},{cookies:[{...sessionCookies[0],domain:'.example.test'},sessionCookies[1]]},{profileUrl:'https://evil.test/in/user'},{password:'not-allowed'},{userAgent:'x'.repeat(513)}]){
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',{...body,...change}))).status,400)
+  }
+  assert.equal(calls,0)
+  assert.equal((await anonClient().rpc('prepare_outreach_linkedin_cookies',{p_person:tenant.person,p_email:tenant.user.email,p_profile:body.profileUrl})).error?.code,'42501')
+})
+
+test('cookie profile mismatch cannot grant a sender; SQL independently fences completion',async t=>{
+  const tenant=await cookieSetup(t)
+  const h=createOnboardingHandlers(config(async input=>Response.json(String(input).endsWith('/ConnectWithCookies')?{linkedInAccountId:4323}:{accountId:4323,status:'Connected',profile:{profileUrl:'https://www.linkedin.com/in/wrong-person'}})))
+  const start=await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)));assert.equal(start.status,200)
+  await admin.from('outreach_connections').update({next_poll_at:null}).eq('person_id',tenant.person)
+  const poll=await h.connection(await request(tenant.supabase,'connections',{action:'poll',channel:'linkedin',personId:tenant.person}));assert.equal((await poll.json()).failureCode,'linkedin_profile_mismatch')
+  assert.deepEqual((await admin.from('outreach_reply_senders').select('id').eq('client_id',tenant.client.id)).data,[])
+  const added=await tenant.supabase.rpc('create_outreach_person',{p_client_id:tenant.client.id,p_name:'Second person',p_email:'second-cookie-person@example.test'});assert.ifError(added.error)
+  const claim=await tenant.supabase.rpc('prepare_outreach_linkedin_cookies',{p_person:added.data!,p_email:'second-cookie-person@example.test',p_profile:'https://www.linkedin.com/in/test-person'});assert.ifError(claim.error)
+  const c=claim.data![0];await admin.from('outreach_connections').update({remote_account:'4324'}).eq('id',c.connection_id)
+  const wrong=await admin.rpc('finish_outreach_connection',{p_id:c.connection_id,p_lease:c.claim_token!,p_state:'connected',p_remote_account:'4324',p_address:'https://www.linkedin.com/in/wrong-person'});assert.equal(wrong.error?.code,'22023')
+})
+
+test('a lost cookie start is recovered from the single sender it created, then polled without replaying the connect', async t => {
+  const tenant = await cookieSetup(t); const senders: { id: number }[] = [{ id: 97001 }]; const paths: string[] = []
+  const h = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname; paths.push(path)
+    if (path.endsWith('/li_account/GetAll')) return Response.json({ totalCount: senders.length, items: senders })
+    if (path.endsWith('/li_account/ConnectWithCookies')) { senders.push({ id: 97002 }); throw new DOMException('The operation timed out.', 'TimeoutError') }
+    if (path.endsWith('/li_account/GetAccountStatus/97002')) return Response.json({ accountId: 97002, status: 'Pending' })
+    throw new Error('Unexpected provider path')
+  }))
+  const first = await h.connection(await request(tenant.supabase, 'connections', cookieBody(tenant.person, tenant.user.email)))
+  assert.equal(first.status, 200); assert.equal((await first.json()).state, 'pending')
+  const saved = await admin.from('outreach_connections').select('id,state,remote_account').eq('person_id', tenant.person).single(); assert.ifError(saved.error)
+  assert.deepEqual([saved.data!.state, saved.data!.remote_account], ['pending', '97002'])
+  assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', saved.data!.id)).error)
+  const poll = await h.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'linkedin' }))
+  assert.equal(poll.status, 200, await poll.clone().text()); assert.equal((await poll.json()).state, 'pending')
+  assert.ok(paths.includes('/api/public/li_account/GetAccountStatus/97002'))
+  assert.equal(paths.filter(path => path.endsWith('/ConnectWithCookies')).length, 1)
+})
+test('lost cookie start stays uncertain and cannot be replayed or rebound to another profile',async t=>{
+  const tenant=await cookieSetup(t);let calls=0
+  const h=createOnboardingHandlers(config(withSenders(async()=>{calls++;throw Error('synthetic-cookie-secret')})))
+  const body=cookieBody(tenant.person,tenant.user.email)
+  const first=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(first.status,200);assert.equal((await first.json()).state,'uncertain')
+  const again=await h.connection(await request(tenant.supabase,'connections',body));assert.equal(again.status,200);assert.equal((await again.json()).state,'uncertain');assert.equal(calls,1)
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',{...body,profileUrl:'https://www.linkedin.com/in/another-profile'}))).status,400)
+  assert.equal(calls,1)
+})
+
+test('a rejected LinkedIn start allows correcting its email after cooldown, then keeps one reserved identity', async t => {
+  const tenant = await cookieSetup(t); let calls = 0
+  const h = createOnboardingHandlers(config(withSenders(async () => ++calls === 1 ? new Response(null, { status: 403 }) : Response.json({ linkedInAccountId: 98001 }))))
+  const first = await h.connection(await request(tenant.supabase, 'connections', cookieBody(tenant.person, tenant.user.email)))
+  assert.equal(first.status, 200); assert.equal((await first.json()).state, 'failed')
+  const corrected = `corrected-${randomUUID()}@example.test`
+  const body = cookieBody(tenant.person, corrected)
+  const tooSoon = await h.connection(await request(tenant.supabase, 'connections', body))
+  assert.equal(tooSoon.status, 400); assert.equal((await tooSoon.json()).failureCode, 'connection_retry_later'); assert.equal(calls, 1)
+  assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  const retries = await Promise.all([h.connection(await request(tenant.supabase,'connections',body)), h.connection(await request(tenant.supabase,'connections',body))])
+  for (const retry of retries) { assert.equal(retry.status,200); assert.ok(['starting','pending'].includes((await retry.json()).state)) }
+  assert.equal(calls,2)
+  const reservation = await admin.from('outreach_connection_reservations').select('email').eq('person_id',tenant.person).eq('channel','linkedin').single()
+  assert.ifError(reservation.error); assert.equal(reservation.data?.email,corrected)
+  const history = await admin.from('outreach_connections').select('expected_email,state').eq('person_id',tenant.person).order('created_at')
+  assert.deepEqual(history.data,[{expected_email:tenant.user.email,state:'failed'},{expected_email:corrected,state:'pending'}])
+})
+
+test('LinkedIn email correction cannot steal another person reservation and rolls back without calling the provider', async t => {
+  const first = await cookieSetup(t), other = await cookieSetup(t, first); let calls = 0
+  const h = createOnboardingHandlers(config(withSenders(async () => { calls++; return new Response(null,{status:403}) })))
+  for (const tenant of [first,other]) {
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)))).status,200)
+    assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  }
+  const denied = await h.connection(await request(first.supabase,'connections',cookieBody(first.person,other.user.email)))
+  assert.equal(denied.status,400); assert.equal((await denied.json()).failureCode,'connection_identity_reserved'); assert.equal(calls,2)
+  const saved = await admin.from('outreach_connection_reservations').select('email').eq('person_id',first.person).single()
+  assert.equal(saved.data?.email,first.user.email)
+})
+
+test('remote, expired and uncertain LinkedIn attempts keep their login reservation when the email changes', async t => {
+  for (const state of ['pending','uncertain','expired','failed'] as const) {
+    const tenant = await cookieSetup(t); let calls = 0
+    const h = createOnboardingHandlers(config(withSenders(async () => { calls++; return state === 'uncertain' ? new Response(null,{status:502}) : Response.json({linkedInAccountId:98002}) })))
+    assert.equal((await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,tenant.user.email)))).status,200)
+    assert.ifError((await admin.from('outreach_connections').update({state,created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+    const denied = await h.connection(await request(tenant.supabase,'connections',cookieBody(tenant.person,`changed-${randomUUID()}@example.test`)))
+    assert.equal(denied.status,400); assert.equal((await denied.json()).failureCode,'linkedin_identity_locked'); assert.equal(calls,1)
+    const saved = await admin.from('outreach_connection_reservations').select('email').eq('person_id',tenant.person).single()
+    assert.equal(saved.data?.email,tenant.user.email)
+    await tenant.cleanup()
+  }
+})
+
+test('password connection can correct an unused LinkedIn login reservation through the same guarded path', async t => {
+  const tenant = await cookieSetup(t); let calls = 0
+  const h = createOnboardingHandlers(config(withSenders(async (_url,init) => {
+    calls++
+    if(calls===1)return new Response(null,{status:403})
+    assert.equal(JSON.parse(String(init?.body)).username,`linkedin-${tenant.user.email}`)
+    return Response.json({linkedInAccountId:98003})
+  })))
+  const body={action:'start',channel:'linkedin',personId:tenant.person,email:tenant.user.email,password:'synthetic-password',country:'US'}
+  assert.equal((await h.connection(await request(tenant.supabase,'connections',body))).status,200)
+  assert.ifError((await admin.from('outreach_connections').update({created_at:new Date(Date.now()-61000).toISOString()}).eq('person_id',tenant.person)).error)
+  const retry=await h.connection(await request(tenant.supabase,'connections',{...body,email:`linkedin-${tenant.user.email}`}))
+  assert.equal(retry.status,200);assert.equal((await retry.json()).state,'pending');assert.equal(calls,2)
 })
