@@ -61,12 +61,12 @@ test('HeyReach Connect uses scoped transport and never requests personal inbox s
     assert.equal(new Headers(init?.headers).get('X-API-KEY'), 'synthetic')
     assert.deepEqual(JSON.parse(String(init?.body)), { username: context.email, password: 'fake-password', twoFactorAuthKey: '', proxyCountryCode: 'us', inboxScrapeMode: 'HeyReachOnly' })
   })) }, { password: 'fake-password', country: 'US' })
-  assert.deepEqual(result, { state: 'pending', remoteAccount: '123' }); assert.ok(!JSON.stringify(result).includes('fake-password'))
+  assert.deepEqual(result, { state: 'pending', remoteAccount: '123', nextStep: 'connecting' }); assert.ok(!JSON.stringify(result).includes('fake-password'))
 })
 test('HeyReach PIN and status are bound to the saved account; unknown intermediate states stay pending', async () => {
   const scope = { ...context, channel: 'linkedin' as const, remoteAccount: '123' }
-  assert.deepEqual(await connectAccount(scope, 'pin', { key: 'synthetic', fetch: transport([new Response(null, { status: 204 })], (_url, init) => assert.deepEqual(JSON.parse(String(init?.body)), { accountId: 123, pin: '123456' })) }, { pin: '123456' }), { state: 'pending' })
-  assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'AwaitingVerification' }]) }), { state: 'pending' })
+  assert.deepEqual(await connectAccount(scope, 'pin', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'PinRequired', profile: { profileUrl: null } }, new Response(null, { status: 204 })], (url, init) => { if (url.endsWith('/SubmitPin')) assert.deepEqual(JSON.parse(String(init?.body)), { accountId: 123, pin: '123456' }) }) }, { pin: '123456' }), { state: 'pending', nextStep: 'connecting' })
+  assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'AwaitingVerification' }]) }), { state: 'pending', nextStep: 'check_status' })
   assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 456, status: 'Connected' }]) }), { state: 'failed' })
   assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 123, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/person' } }]) }), { state: 'connected', remoteAccount: '123', address: 'https://www.linkedin.com/in/person' })
 })
@@ -217,7 +217,7 @@ test('cookie connection sends only a validated session and records no cookie val
     assert.equal(url,'https://api.heyreach.io/api/public/li_account/ConnectWithCookies')
     assert.deepEqual(JSON.parse(String(init?.body)),{cookies,proxyCountryCode:'us',inboxScrapeMode:'HeyReachOnly',userAgent:'Synthetic Chrome'})
   })},{cookies,country:'US',userAgent:'Synthetic Chrome'})
-  assert.deepEqual(result,{state:'pending',remoteAccount:'321'})
+  assert.deepEqual(result,{state:'pending',remoteAccount:'321',nextStep:'connecting'})
   for(const value of cookies.map(c=>c.value))assert.ok(!JSON.stringify(result).includes(value))
 })
 
@@ -286,7 +286,7 @@ test('a lost connect reply adopts the single sender it created; a browser sessio
   const cookies = [{ name: 'li_at' as const, value: 'synthetic-session', domain: '.linkedin.com' as const, path: '/' as const }, { name: 'JSESSIONID' as const, value: '"ajax:1"', domain: '.linkedin.com' as const, path: '/' as const }]
   const senders = [{ id: 11 }]
   const lost = heyreach(async () => { senders.push({ id: 12 }); throw new DOMException('The operation timed out.', 'TimeoutError') }, senders)
-  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: lost }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' }), { state: 'pending', remoteAccount: '12' })
+  assert.deepEqual(await connectAccount(scope, 'start', { key: 'synthetic', fetch: lost }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' }), { state: 'pending', remoteAccount: '12', nextStep: 'connecting' })
   // The adopted sender must still prove the expected profile before it can count as connected.
   const polled = await connectAccount({ ...scope, remoteAccount: '12' }, 'poll', { key: 'synthetic', fetch: transport([{ accountId: 12, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/someone-else' } }]) })
   assert.deepEqual(polled, { state: 'failed', failureCode: 'linkedin_profile_mismatch' })
@@ -298,7 +298,7 @@ test('a lost password login is adopted only for the sender carrying that login, 
     const senders = [...start]
     return connectAccount(scope, 'start', { key: 'synthetic', fetch: heyreach(async () => { senders.push(...created); throw new TypeError('fetch failed') }, senders) }, { password: 'fake-password', country: 'US' })
   }
-  assert.deepEqual(await attempt([{ id: 2, emailAddress: context.email.toUpperCase() }]), { state: 'pending', remoteAccount: '2' })
+  assert.deepEqual(await attempt([{ id: 2, emailAddress: context.email.toUpperCase() }]), { state: 'pending', remoteAccount: '2', nextStep: 'connecting' })
   assert.deepEqual(await attempt([{ id: 2, emailAddress: 'someone@example.test' }]), { state: 'uncertain' })
   assert.deepEqual(await attempt([{ id: 2 }]), { state: 'uncertain' })
   assert.deepEqual(await attempt([{ id: 2, emailAddress: context.email }, { id: 3, emailAddress: context.email }]), { state: 'uncertain' })

@@ -4,10 +4,11 @@ import { linkedinCookies, linkedinProfileUrl, type LinkedInCookie } from './link
 import { normalizeProviderPath, providerRequestId, redactProviderText, type ProviderCallEntry, type ProviderCallLogger } from './provider-call-log'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
-type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_no_free_seat' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected'
+type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_no_free_seat' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected' | 'linkedin_disconnected' | 'linkedin_status_unavailable' | 'linkedin_code_rejected' | 'linkedin_code_not_requested' | 'linkedin_check_in_progress'
+export type ConnectionNextStep = 'connecting' | 'verification_code' | 'syncing' | 'check_status'
 export type ConnectionFailureCode = 'account_create_required' | 'account_read_required' | 'key_rejected' | 'access_denied' | 'rate_limited' | 'service_unavailable' | 'workspace_mismatch' | 'mailbox_mismatch' | 'account_not_ready' | 'personal_gmail_unsupported' | 'account_already_assigned' | 'sign_in_rejected' | 'consent_denied' | LinkedInFailureCode
 export type ConnectionResult = {
-  state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string
+  state: ConnectionState; failureCode?: ConnectionFailureCode; remoteSession?: string; remoteAccount?: string; authUrl?: string; address?: string; nextStep?: ConnectionNextStep
 }
 export type ConnectionContext = {
   channel: 'email' | 'linkedin'; email: string; workspace: string; credential: string
@@ -309,7 +310,7 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
           cookies ? '/li_account/ConnectWithCookies' : '/li_account/Connect',
           cookies ? { cookies, proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly', userAgent: input.userAgent }
             : { username: context.email, password: input.password, twoFactorAuthKey: '', proxyCountryCode: country, inboxScrapeMode: 'HeyReachOnly' }))
-        return { state: 'pending', remoteAccount: result.linkedInAccountId }
+        return { state: 'pending', remoteAccount: result.linkedInAccountId, nextStep: 'connecting' }
       } catch (error) {
         const lostReply = !(error instanceof ProviderFailure) && !(error instanceof z.ZodError) && !(error instanceof SyntaxError)
         const after = lostReply && before ? await linkedinSenders(options) : null
@@ -318,23 +319,23 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         // login has no profile to check, so it is adopted only when the sender carries that login.
         if (added.length === 1 && (cookies || added[0].email === context.email)) {
           console.warn('LinkedIn connection recovered after a lost reply', { method: cookies ? 'cookies' : 'password' })
-          return { state: 'pending', remoteAccount: added[0].id }
+          return { state: 'pending', remoteAccount: added[0].id, nextStep: 'connecting' }
         }
         throw error
       }
     }
     const id = remoteId.parse(context.remoteAccount)
-    if (action === 'pin') {
-      if (!input.pin) return { state: 'failed' }
-      await request('/li_account/SubmitPin', { accountId: Number(id), pin: input.pin })
-      return { state: 'pending' }
-    }
+    stage = 'linkedin_status'
+    // Unconnected accounts can have a profile object whose fields are null.
+    // Validate the profile only when confirming a successful connection.
     const result = z.object({ accountId: remoteId, status: z.string(), failureReason: z.string().nullish(),
-      profile: z.object({ profileUrl: z.string() }).nullish(),
+      profile: z.unknown().optional(),
     }).parse(await request(`/li_account/GetAccountStatus/${id}`))
     if (result.accountId !== id) return { state: 'failed' }
-    if (result.status === 'Connected' && !result.failureReason && result.profile) {
-      const url = new URL(result.profile.profileUrl)
+    if (result.failureReason || result.status === 'Disconnected') return { state: 'failed', failureCode: 'linkedin_disconnected' }
+    if (result.status === 'Connected') {
+      const profileResult = z.object({ profileUrl: z.string() }).parse(result.profile)
+      const url = new URL(profileResult.profileUrl)
       if (url.protocol !== 'https:' || !['www.linkedin.com', 'linkedin.com'].includes(url.hostname) || !url.pathname.startsWith('/in/') || url.username || url.password || url.port) return { state: 'failed' }
       if (context.expectedProfileUrl) {
         const profile = linkedinProfileUrl(url.href)
@@ -343,10 +344,19 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       }
       return { state: 'connected', remoteAccount: id, address: url.href }
     }
-    if (result.failureReason || result.status === 'Disconnected') return { state: 'failed' }
-    // The public API does not enumerate all intermediate states. Keep polling;
-    // expose the PIN form throughout pending rather than guessing status names.
-    return { state: 'pending' }
+    // The API documents status as free text. Recognize explicit PIN requests;
+    // an unknown status never implies a code was sent or permits a new login.
+    const normalized = result.status.replace(/[\s_-]/g, '').toLowerCase()
+    const nextStep: ConnectionNextStep = ['pinrequired', 'awaitingpin'].includes(normalized) ? 'verification_code'
+      : normalized === 'syncing' ? 'syncing' : normalized === 'connecting' ? 'connecting' : 'check_status'
+    if (action === 'pin') {
+      if (nextStep !== 'verification_code') return { state: 'pending', nextStep, failureCode: 'linkedin_code_not_requested' }
+      if (!input.pin || !/^[0-9]{4,10}$/.test(input.pin)) return { state: 'pending', nextStep, failureCode: 'linkedin_code_rejected' }
+      stage = 'linkedin_pin'
+      await request('/li_account/SubmitPin', { accountId: Number(id), pin: input.pin })
+      return { state: 'pending', nextStep: 'connecting' }
+    }
+    return { state: 'pending', nextStep }
   } catch (error) {
     // Never return/log provider text, password, PIN, key or transport diagnostics.
     // Poll/PIN failures on HeyReach are safe to check again; Connect is never replayed.
@@ -357,7 +367,13 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
         failureCode: error instanceof ProviderFailure ? error.failureCode : undefined,
         reason: error instanceof z.ZodError ? 'unexpected_response' : error instanceof ProviderFailure ? 'provider_response' : 'transport_error' })
     }
-    if (context.channel === 'linkedin' && action !== 'start') return { state: 'pending' }
+    if (context.channel === 'linkedin' && action !== 'start') {
+      if (stage === 'linkedin_pin' && error instanceof ProviderFailure && [400, 422].includes(error.status ?? 0))
+        return { state: 'pending', nextStep: 'verification_code', failureCode: 'linkedin_code_rejected' }
+      return { state: 'pending', nextStep: 'check_status', failureCode: error instanceof ProviderFailure && [401, 403].includes(error.status ?? 0)
+        ? 'linkedin_access_denied' : action === 'pin' && error instanceof ProviderFailure && error.status === 409
+          ? 'linkedin_code_not_requested' : 'linkedin_status_unavailable' }
+    }
     if (context.channel === 'email') {
       // OAuth terminal results are consumed on read. An unreadable/lost result
       // must never replay login or the session read. Independently confirm the

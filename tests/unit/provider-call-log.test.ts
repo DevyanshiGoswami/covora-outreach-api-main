@@ -72,7 +72,7 @@ test('successful calls are logged without an excerpt; failed transport is logged
 test('a failing logger never changes a provider outcome', async () => {
   const result = await connectAccount(linkedin, 'start', { key, log: async () => { throw new Error('log store down') },
     fetch: async () => Response.json({ linkedInAccountId: 321 }) }, { cookies, country: 'US', userAgent: 'Synthetic Chrome' })
-  assert.deepEqual(result, { state: 'pending', remoteAccount: '321' })
+  assert.deepEqual(result, { state: 'pending', remoteAccount: '321', nextStep: 'connecting' })
 })
 
 test('the access probe only reads: key check, then an Account Login endpoint with a placeholder account', async () => {

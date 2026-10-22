@@ -26,6 +26,39 @@ async function request(session: ReturnType<typeof anonClient>, path: string, bod
   const token = (await session.auth.getSession()).data.session!.access_token
   return new Request(`http://localhost/api/onboarding/${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) })
 }
+test('LinkedIn progress is tenant guarded and a disconnected null-profile response finishes the pending attempt', async t => {
+  const tenant = await setup(t), foreign = await setup(t, tenant.workspace)
+  assert.ifError((await admin.from('outreach_reply_workspaces').insert({ client_id: tenant.client.id, channel: 'linkedin', credential_ref: 'OUTREACH_HEYREACH_TEST', remote_workspace_id: randomUUID(), enabled: true })).error)
+  let status = 'Connecting', calls = 0
+  const handlers = createOnboardingHandlers(config(async input => {
+    calls++
+    const path = new URL(String(input)).pathname
+    if (path.endsWith('/GetAll')) return Response.json({ totalCount: 0, items: [] })
+    if (path.endsWith('/Connect')) return Response.json({ linkedInAccountId: 76543 })
+    if (path.endsWith('/GetAccountStatus/76543')) return Response.json({ accountId: 76543, status, profile: { fullName: null, email: null, profileUrl: null } })
+    throw Error('Unexpected provider call')
+  }))
+  const start = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', channel: 'linkedin', personId: tenant.person, email: tenant.user.email, password: 'synthetic-password', country: 'US' }))
+  assert.equal(start.status, 200)
+  assert.equal((await start.json()).nextStep, 'connecting')
+  const saved = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).eq('channel', 'linkedin').single()
+  assert.ifError(saved.error)
+  const poll = { action: 'poll', channel: 'linkedin', personId: tenant.person }
+  const beforeDenied = calls
+  assert.equal((await handlers.connection(await request(foreign.supabase, 'connections', poll))).status, 403)
+  assert.equal(calls, beforeDenied)
+  for (const [remote, expectedState, nextStep] of [['Connecting', 'pending', 'connecting'], ['PinRequired', 'pending', 'verification_code'], ['Syncing', 'pending', 'syncing'], ['Disconnected', 'failed', undefined]]) {
+    status = remote!
+    assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', saved.data!.id)).error)
+    const response = await handlers.connection(await request(tenant.supabase, 'connections', poll))
+    assert.equal(response.status, 200)
+    const result = await response.json()
+    assert.equal(result.state, expectedState); assert.equal(result.nextStep, nextStep)
+    for (const secret of ['76543', 'synthetic-password', 'profileUrl', 'PinRequired']) assert.ok(!JSON.stringify(result).includes(secret))
+  }
+  const people = peopleSchema.parse((await tenant.supabase.rpc('list_outreach_people', { p_client: tenant.client.id })).data)
+  assert.equal(people.find(person => person.id === tenant.person)!.connections[0].state, 'failed')
+})
 test('owner creates clients; other roles cannot; direct private table/RPC access denied', async t => {
   const owner = await createAdmin(t); await grantOutreachOwner(owner.user.id); await grantAgencyControls(owner.user.id)
   const id = randomUUID(); t.after(async () => { await admin.from('clients').delete().eq('id', id) })
@@ -216,13 +249,22 @@ test('LinkedIn PIN flow completes with a disabled sender binding and no credenti
     const path = new URL(String(url)).pathname
     if (path.endsWith('/Connect')) { connectCalls++; return Response.json({ linkedInAccountId: '123' }) }
     if (path.endsWith('/SubmitPin')) { assert.equal(JSON.parse(String(init?.body)).accountId, 123); pinCalls++; connected = true; return new Response(null, { status: 204 }) }
-    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'Connecting', profile: { profileUrl: 'https://www.linkedin.com/in/synthetic-person' } })
+    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'PinRequired', profile: { profileUrl: connected ? 'https://www.linkedin.com/in/synthetic-person' : null } })
     throw new Error('Unexpected provider path')
   }))
   const started = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', personId: tenant.person, channel: 'linkedin', email: tenant.user.email, password: 'synthetic-password-never-stored', country: 'US' }))
   assert.equal(started.status, 200, await started.clone().text())
   async function release() { assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('person_id', tenant.person)).error) }
   await release()
+  const awaiting = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'linkedin' }))
+  assert.equal((await awaiting.json()).nextStep, 'verification_code')
+  const reserved = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'linkedin', p_action: 'pin' })
+  assert.ifError(reserved.error)
+  const claim = reserved.data![0]; assert.ok(claim.claim_token)
+  const busy = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
+  assert.equal((await busy.json()).failureCode, 'linkedin_check_in_progress'); assert.equal(pinCalls, 0)
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token!, p_state: 'pending' })).data, true)
+  // Submit immediately after discovering the code request, inside the read cooldown.
   const pin = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
   assert.equal(pin.status, 200, await pin.clone().text()); assert.equal(pinCalls, 1)
   await release()

@@ -240,6 +240,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       const claim = z.tuple([z.object({ connection_id: z.uuid(), claim_token: z.uuid().nullable() })]).parse(prepared.data)[0]
       const admin = service(config)
       let failureCode: ConnectionResult['failureCode']
+      let nextStep: ConnectionResult['nextStep']
       if (claim.claim_token) {
         const result = await admin.rpc('read_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token })
         checkDatabaseError(result.error)
@@ -255,6 +256,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         })
           : { state: 'failed', ...(scope.data.channel === 'email' ? { failureCode: 'key_rejected' as const } : {}) }
         failureCode = observation.failureCode
+        nextStep = observation.nextStep
         const finished = await admin.rpc('finish_outreach_connection', {
           p_id: claim.connection_id, p_lease: claim.claim_token, p_state: observation.state,
           ...('remoteSession' in observation && observation.remoteSession ? { p_remote_session: observation.remoteSession } : {}),
@@ -269,8 +271,10 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       const saved = await admin.from('outreach_connections').select('id,state,auth_url,expires_at').eq('id', claim.connection_id).single()
       checkDatabaseError(saved.error)
       if (!saved.data) throw new ApiError(500)
+      if (value.action === 'pin' && !claim.claim_token && saved.data.state === 'pending') failureCode = 'linkedin_check_in_progress'
       return json({ connectionId: saved.data.id, state: saved.data.state, expiresAt: saved.data.expires_at,
         ...(failureCode ? { failureCode } : {}),
+        ...(saved.data.state === 'pending' && nextStep ? { nextStep } : {}),
         authUrl: saved.data.state === 'pending' && saved.data.auth_url ? emailAuthorizationUrl(saved.data.auth_url) : null })
     }),
   }
