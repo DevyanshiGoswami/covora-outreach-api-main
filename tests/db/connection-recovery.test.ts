@@ -51,7 +51,7 @@ async function act(h: ReturnType<typeof handlers>, session: ReturnType<typeof an
   return { http: response.status, ...(await response.json().catch(() => ({}))) } as { http: number; state?: string; failureCode?: string; reviewStatus?: string; authUrl?: string | null }
 }
 async function latest(personId: string, channel: string) {
-  const row = await admin.from('outreach_connections').select('id,state,remote_account,remote_created,remote_released_at').eq('person_id', personId).eq('channel', channel).order('created_at', { ascending: false }).limit(1).single()
+  const row = await admin.from('outreach_connections').select('id,state,remote_account').eq('person_id', personId).eq('channel', channel).order('created_at', { ascending: false }).limit(1).single()
   assert.ifError(row.error); return row.data!
 }
 const touch = async (personId: string, channel: string, patch: Database['public']['Tables']['outreach_connections']['Update']) => {
@@ -84,7 +84,7 @@ test('a lost LinkedIn connect is recovered from the sender carrying the login, t
   await pollReady(s.person, 'linkedin')
   const restored = await act(h, s.supabase, liReview(s.person))
   assert.deepEqual([restored.state, restored.reviewStatus], ['pending', 'restored'])
-  const row = await latest(s.person, 'linkedin'); assert.deepEqual([row.remote_account, row.remote_created], ['602', false])
+  const row = await latest(s.person, 'linkedin'); assert.equal(row.remote_account, '602')
   assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
 })
 
@@ -99,56 +99,41 @@ test('an attempt whose request died after HeyReach accepted it is restored with 
   assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
 })
 
-test('a failed LinkedIn login releases the sender Covora created, once', async t => {
-  const s = await person(t); const calls: string[] = []; let gone = false
-  const h = handlers([senders([]), connect(json({ linkedInAccountId: 604 })), liStatus(li(604, 'Disconnected')),
-    getById(() => gone ? Response.json({}, { status: 404 }) : Response.json({ id: 604, activeCampaigns: 0 })), remove(() => { gone = true; return Response.json({}) })], calls)
-  await act(h, s.supabase, password(s.person, s.email))
-  assert.equal((await latest(s.person, 'linkedin')).remote_created, true)
-  await pollReady(s.person, 'linkedin')
-  assert.equal((await act(h, s.supabase, liPoll(s.person))).failureCode, 'linkedin_disconnected')
-  assert.deepEqual(calls.filter(call => call.startsWith('DELETE')), ['DELETE /li_account/RemoveAccount/604'])
-  assert.ok((await latest(s.person, 'linkedin')).remote_released_at)
-  await cooledDown(s.person, 'linkedin')
-  await act(handlers([senders([]), connect(json({ linkedInAccountId: 605 }))], calls), s.supabase, password(s.person, s.email))
-  assert.equal(calls.filter(call => call.startsWith('DELETE')).length, 1)
+test('failed and expired LinkedIn attempts never remove an external account implicitly', async t => {
+  let shared: { workspace: string; linkedinWorkspace: string } | undefined
+  for (const state of ['failed', 'expired'] as const) {
+    const s = await person(t, shared); shared = s
+    const calls: string[] = []
+    const h = handlers([senders([]), connect(json({ linkedInAccountId: state === 'failed' ? 604 : 606 })), liStatus(li(604, 'Disconnected')),
+      getById(json({ id: 604, activeCampaigns: 0 })), remove(json({}))], calls)
+    await act(h, s.supabase, password(s.person, s.email))
+    if (state === 'expired') await windowPassed(s.person, 'linkedin')
+    await pollReady(s.person, 'linkedin')
+    assert.equal((await act(h, s.supabase, liPoll(s.person))).state, state)
+    await cooledDown(s.person, 'linkedin')
+    await act(handlers([senders([]), connect(json({ linkedInAccountId: 607 }))], calls), s.supabase, password(s.person, s.email))
+    assert.ok(!calls.some(call => call.startsWith('DELETE')))
+  }
 })
 
-test('an expired attempt releases its sender before the next connect uses a seat', async t => {
+test('recovery cannot adopt an account after its provider workspace changes', async t => {
   const s = await person(t); const calls: string[] = []
-  await act(handlers([senders([]), connect(json({ linkedInAccountId: 606 })), liStatus(li(606, 'Connecting'))]), s.supabase, password(s.person, s.email))
-  await windowPassed(s.person, 'linkedin'); await pollReady(s.person, 'linkedin')
-  assert.equal((await act(handlers([liStatus(li(606, 'Connecting'))]), s.supabase, liPoll(s.person))).state, 'expired')
-  const h = handlers([senders([]), connect(json({ linkedInAccountId: 607 })), getById(json({ id: 606, activeCampaigns: 0 })), remove(json({}))], calls)
-  assert.equal((await act(h, s.supabase, password(s.person, s.email))).state, 'pending')
-  const order = calls.filter(call => /RemoveAccount|Connect$/.test(call))
-  assert.deepEqual(order, ['DELETE /li_account/RemoveAccount/606', 'POST /li_account/Connect'])
-})
-
-test('a sender in a campaign, or one Covora did not create, is never released', async t => {
-  const s = await person(t); const calls: string[] = []
-  await act(handlers([senders([]), connect(json({ linkedInAccountId: 608 }))]), s.supabase, password(s.person, s.email))
+  await act(handlers([senders([]), connect(down)]), s.supabase, password(s.person, s.email))
   await pollReady(s.person, 'linkedin')
-  await act(handlers([liStatus(li(608, 'Disconnected')), getById(json({ id: 608, activeCampaigns: 1 })), remove(json({}))], calls), s.supabase, liPoll(s.person))
-  assert.ok(!calls.some(call => call.startsWith('DELETE'))); assert.equal((await latest(s.person, 'linkedin')).remote_released_at, null)
-  const other = await person(t, s); const otherCalls: string[] = []
-  await act(handlers([senders([]), connect(down)]), other.supabase, password(other.person, other.email))
-  await pollReady(other.person, 'linkedin')
-  await act(handlers([senders([{ id: 609, emailAddress: other.email }])]), other.supabase, liReview(other.person))
-  await pollReady(other.person, 'linkedin')
-  await act(handlers([liStatus(li(609, 'Disconnected')), getById(json({ id: 609, activeCampaigns: 0 })), remove(json({}))], otherCalls), other.supabase, liPoll(other.person))
-  assert.ok(!otherCalls.some(call => call.startsWith('DELETE')))
+  const binding = await admin.from('outreach_reply_workspaces').select('version').eq('client_id', s.client.id).eq('channel', 'linkedin').single()
+  assert.ifError(binding.error)
+  assert.ifError((await admin.from('outreach_reply_workspaces').update({ version: binding.data!.version + 1 }).eq('client_id', s.client.id).eq('channel', 'linkedin')).error)
+  assert.equal((await act(handlers([senders([{ id: 608, emailAddress: s.email }])], calls), s.supabase, liReview(s.person))).http, 403)
+  assert.deepEqual(calls, [])
 })
 
-test('only someone who may connect this person can check, switch or release their attempts', async t => {
+test('only someone who may connect this person can check or switch their attempts', async t => {
   const s = await person(t); const outsider = await createTenant(t, { features: ['outreach_app'] })
   await act(handlers([senders([]), connect(down)]), s.supabase, password(s.person, s.email))
   assert.equal((await outsider.supabase.rpc('prepare_outreach_linkedin_review', { p_person: s.person })).error?.code, '42501')
-  assert.equal((await outsider.supabase.rpc('list_outreach_remote_releases', { p_person: s.person })).error?.code, '42501')
   assert.equal((await outsider.supabase.rpc('prepare_outreach_email_switch', { p_person: s.person })).error?.code, '42501')
-  for (const name of ['read_outreach_linkedin_review', 'finish_outreach_linkedin_review', 'finish_outreach_email_switch', 'mark_outreach_remote_created', 'mark_outreach_remote_released'] as const) {
-    const args = name === 'read_outreach_linkedin_review' ? { p_id: randomUUID(), p_lease: randomUUID() } : name.startsWith('finish') ? { p_id: randomUUID(), p_lease: randomUUID(), p_outcome: 'missing' }
-      : name === 'mark_outreach_remote_created' ? { p_id: randomUUID(), p_remote_account: '1' } : { p_id: randomUUID() }
+  for (const name of ['read_outreach_linkedin_review', 'finish_outreach_linkedin_review', 'finish_outreach_email_switch'] as const) {
+    const args = name === 'read_outreach_linkedin_review' ? { p_id: randomUUID(), p_lease: randomUUID() } : { p_id: randomUUID(), p_lease: randomUUID(), p_outcome: 'missing' }
     assert.equal((await s.supabase.rpc(name, args as never)).error?.code, '42501', name)
   }
 })

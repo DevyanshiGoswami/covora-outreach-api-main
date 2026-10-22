@@ -247,7 +247,7 @@ async function linkedinSenders(options: ProviderOptions): Promise<{ id: string; 
 
 /**
  * Check a stuck (uncertain) LinkedIn attempt. A known sender is restored to normal status checks.
- * Otherwise the newest sender carrying this login email is adopted; status checks then verify it
+ * Otherwise a unique sender carrying this login email is adopted; status checks then verify it
  * exactly as after a normal start. No sender means the attempt never reached HeyReach.
  */
 export async function reviewLinkedinAttempt(context: ConnectionContext, options: ProviderOptions): Promise<
@@ -255,26 +255,9 @@ export async function reviewLinkedinAttempt(context: ConnectionContext, options:
   if (context.remoteAccount) return { outcome: 'restore', remoteAccount: remoteId.parse(context.remoteAccount) }
   const list = await linkedinSenders(options)
   if (!list) return { outcome: 'unavailable' }
-  const matches = list.filter(sender => sender.email === context.email).sort((a, b) => Number(b.id) - Number(a.id))
-  return matches.length ? { outcome: 'restore', remoteAccount: matches[0].id } : { outcome: 'missing' }
-}
-
-/**
- * Remove a HeyReach sender that Covora created for an attempt that failed or expired, so it stops
- * holding a paid seat. A sender used by any campaign is kept.
- */
-export async function releaseLinkedinSender(remoteAccount: string, options: ProviderOptions): Promise<'released' | 'kept' | 'unavailable'> {
-  try {
-    const id = remoteId.parse(remoteAccount)
-    const request = transport('linkedin', options, LINKEDIN_LIST_TIMEOUT_MS)
-    let raw: unknown
-    try { raw = await request(`/li_account/GetById?accountId=${id}`) }
-    catch (error) { if (error instanceof ProviderFailure && error.status === 404) return 'released'; throw error }
-    const account = z.object({ id: remoteId, activeCampaigns: z.number().int().nonnegative() }).parse(raw)
-    if (account.id !== id || account.activeCampaigns > 0) return 'kept'
-    await request(`/li_account/RemoveAccount/${id}?force=false`, undefined, 'DELETE')
-    return 'released'
-  } catch { return 'unavailable' }
+  const matches = list.filter(sender => sender.email === context.email)
+  if (matches.length > 1) return { outcome: 'unavailable' }
+  return matches.length === 1 ? { outcome: 'restore', remoteAccount: matches[0].id } : { outcome: 'missing' }
 }
 
 export async function connectAccount(context: ConnectionContext, action: 'start' | 'poll' | 'pin', options: ProviderOptions,

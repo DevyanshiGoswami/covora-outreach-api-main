@@ -1,9 +1,5 @@
 -- Recovery paths for connection attempts that end stuck or abandoned. Existing flows are unchanged.
 
--- LinkedIn senders that Covora itself created, so a failed or expired attempt can release its seat.
-alter table public.outreach_connections add column remote_created boolean not null default false,
-  add column remote_released_at timestamptz;
-
 -- 1. "Check connection status" for a stuck (uncertain) LinkedIn attempt, mirroring the email review.
 create function public.prepare_outreach_linkedin_review(p_person uuid)
 returns table(connection_id uuid,claim_token uuid)
@@ -16,6 +12,7 @@ begin
   w:=outreach_private.connection_workspace(person.client_id,'linkedin');
   select * into c from public.outreach_connections where person_id=p_person and channel='linkedin' order by created_at desc,id desc limit 1 for update;
   if c.id is null then raise invalid_parameter_value; end if;
+  if c.workspace_version<>(w->>'version')::bigint then raise insufficient_privilege; end if;
   -- A request that died holding its lease is the same unknown outcome as a lost reply.
   if c.state in ('starting','pending') and c.lease_id is not null and c.lease_until<clock_timestamp() then
     update public.outreach_connections set state='uncertain',lease_id=null,lease_until=null where id=c.id;
@@ -85,43 +82,7 @@ end; $$;
 revoke all on function public.finish_outreach_linkedin_review(uuid,uuid,text,text) from public,anon,authenticated,service_role;
 grant execute on function public.finish_outreach_linkedin_review(uuid,uuid,text,text) to service_role;
 
--- 2. Release HeyReach senders created by attempts that failed or expired.
-create function public.mark_outreach_remote_created(p_id uuid,p_remote_account text) returns boolean
-language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
-begin
-  update public.outreach_connections set remote_created=true where id=p_id and channel='linkedin' and remote_account=p_remote_account;
-  return found;
-end; $$;
-revoke all on function public.mark_outreach_remote_created(uuid,text) from public,anon,authenticated,service_role;
-grant execute on function public.mark_outreach_remote_created(uuid,text) to service_role;
-
--- Callable by anyone who may connect this person; returns only senders Covora created for that
--- person's failed or expired attempts that no live attempt or connection uses.
-create function public.list_outreach_remote_releases(p_person uuid) returns table(connection_id uuid,remote_account text)
-language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
-begin
-  perform outreach_private.person_connection_authority(p_person,auth.uid());
-  return query select c.id,c.remote_account from public.outreach_connections c
-    where c.person_id=p_person and c.channel='linkedin' and c.state in ('failed','expired') and c.remote_created
-      and c.remote_released_at is null and c.remote_account is not null
-      and not exists(select 1 from public.outreach_connections o where o.channel='linkedin' and o.remote_account=c.remote_account and o.id<>c.id
-        and o.state in ('starting','pending','connected','uncertain','disconnecting','disconnect_uncertain'))
-    order by c.created_at desc limit 3;
-end; $$;
-revoke all on function public.list_outreach_remote_releases(uuid) from public,anon,authenticated,service_role;
-grant execute on function public.list_outreach_remote_releases(uuid) to authenticated;
-
-create function public.mark_outreach_remote_released(p_id uuid) returns boolean
-language plpgsql security definer set search_path=pg_catalog,public,pg_temp as $$
-begin
-  update public.outreach_connections set remote_released_at=clock_timestamp()
-    where id=p_id and channel='linkedin' and remote_created and remote_released_at is null and state in ('failed','expired');
-  return found;
-end; $$;
-revoke all on function public.mark_outreach_remote_released(uuid) from public,anon,authenticated,service_role;
-grant execute on function public.mark_outreach_remote_released(uuid) to service_role;
-
--- 3. Choosing the other email provider while a sign-in is open. Only the person who opened it can
+-- 2. Choosing the other email provider while a sign-in is open. Only the person who opened it can
 -- close it, never mid-request, and no sooner than a new attempt could start anyway. The reserved
 -- mailbox is checked first: a completed sign-in becomes connected, a missing one ends so the other
 -- provider can start, and one that cannot be checked stays open exactly as it was.
@@ -138,6 +99,7 @@ begin
   if c.id is null or c.state<>'pending' or c.lease_id is not null or c.actor_id<>auth.uid() then
     return query select c.id,null::uuid; return;
   end if;
+  if c.workspace_version<>(w->>'version')::bigint then raise insufficient_privilege; end if;
   if c.created_at>clock_timestamp()-interval '30 seconds' then
     raise exception using errcode='22023',message='Connection retry too soon'; end if;
   lease:=gen_random_uuid();

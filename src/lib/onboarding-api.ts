@@ -6,7 +6,7 @@ import type { Database } from './database.types'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
-import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, releaseLinkedinSender, reviewEmailAccount, reviewLinkedinAttempt, type ConnectionResult } from './onboarding-provider'
+import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, reviewEmailAccount, reviewLinkedinAttempt, type ConnectionResult } from './onboarding-provider'
 import { createProviderCallLogger } from './provider-call-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
@@ -54,29 +54,6 @@ function emailProviderOf(authUrl: string | null | undefined): 'google' | 'micros
   try { return new URL(authUrl).hostname === 'login.microsoftonline.com' ? 'microsoft' : 'google' } catch { return null }
 }
 
-/**
- * Remove HeyReach senders that Covora created for this person's failed or expired attempts, so they
- * stop holding seats. The caller's own session authorizes the list; failures never block the request.
- * The whole cleanup stays within a few seconds so a following connect still fits its lease.
- */
-async function releaseLinkedinSenders(client: SupabaseClient<Database>, personId: string, requestSignal: AbortSignal, config?: OnboardingApiConfig) {
-  const signal = AbortSignal.any([requestSignal, AbortSignal.timeout(8000)])
-  try {
-    const listed = await client.rpc('list_outreach_remote_releases', { p_person: personId })
-    if (listed.error || !listed.data?.length) return
-    const admin = service(config)
-    const person = await admin.from('outreach_people').select('client_id').eq('id', personId).single()
-    if (person.error || !person.data) return
-    const binding = await admin.from('outreach_reply_workspaces').select('credential_ref').eq('client_id', person.data.client_id).eq('channel', 'linkedin').maybeSingle()
-    const key = binding.data ? await credential(binding.data.credential_ref, config) : undefined
-    if (!key) return
-    for (const row of listed.data) {
-      const outcome = await releaseLinkedinSender(row.remote_account, { key, fetch: config?.providerFetch, signal,
-        log: createProviderCallLogger(admin, { source: 'connection', connectionId: row.connection_id }) })
-      if (outcome === 'released') await admin.rpc('mark_outreach_remote_released', { p_id: row.connection_id })
-    }
-  } catch { /* Seat cleanup is best effort and retried on the next attempt. */ }
-}
 async function input<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   if (new URL(request.url).search) throw new ApiError(400)
   const parsed = schema.safeParse(await readJson(request))
@@ -342,8 +319,6 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         const scope = privateContext.safeParse(result.data)
         if (!scope.success) throw new ApiError(403)
         const key = await credential(scope.data.credential, config)
-        // Free seats held by this person's earlier failed or expired attempts before using another.
-        if (key && scope.data.channel === 'linkedin' && action === 'start') await releaseLinkedinSenders(client, value.personId, request.signal, config)
         const observation: ConnectionResult = key ? await connectAccount(scope.data, action, { key, fetch: config?.providerFetch, signal: request.signal,
           log: createProviderCallLogger(admin, { source: 'connection', connectionId: claim.connection_id }) }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
@@ -363,11 +338,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         })
         checkDatabaseError(finished.error)
         if (!finished.data) throw new ApiError(403)
-        if (scope.data.channel === 'linkedin' && action === 'start' && observation.state === 'pending' && observation.remoteAccount) {
-          // Remember that Covora created this sender, so a later failure can release its seat.
-          await admin.rpc('mark_outreach_remote_created', { p_id: claim.connection_id, p_remote_account: observation.remoteAccount })
-        }
-        if (scope.data.channel === 'linkedin' && observation.state === 'failed') await releaseLinkedinSenders(client, value.personId, request.signal, config)
+
       }
       // prepare authorized the same actor even for an idempotent/cache response.
       const saved = await admin.from('outreach_connections').select('id,state,auth_url,expires_at').eq('id', claim.connection_id).single()

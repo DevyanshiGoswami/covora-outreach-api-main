@@ -304,13 +304,13 @@ isOneToOne: false
                   ]
                 },"outreach_connections": {
                   Row: {
-                    "actor_id": string,"auth_url": string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at": string,"expected_email": string,"expected_profile_url": string | null,"expires_at": string,"id": string,"lease_id": string | null,"lease_until": string | null,"next_poll_at": string | null,"person_id": string,"remote_account": string | null,"remote_created": boolean,"remote_released_at": string | null,"remote_session": string | null,"state": string,"updated_at": string,"workspace_version": number
+                    "actor_id": string,"auth_url": string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at": string,"expected_email": string,"expected_profile_url": string | null,"expires_at": string,"id": string,"lease_id": string | null,"lease_until": string | null,"next_poll_at": string | null,"person_id": string,"remote_account": string | null,"remote_session": string | null,"state": string,"updated_at": string,"workspace_version": number
                   }
                   Insert: {
-                    "actor_id": string,"auth_url"?: string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at"?: string,"expected_email": string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id": string,"remote_account"?: string | null,"remote_created"?: boolean,"remote_released_at"?: string | null,"remote_session"?: string | null,"state": string,"updated_at"?: string,"workspace_version": number
+                    "actor_id": string,"auth_url"?: string | null,"authority_stamp": string,"channel": string,"client_id": string,"created_at"?: string,"expected_email": string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id": string,"remote_account"?: string | null,"remote_session"?: string | null,"state": string,"updated_at"?: string,"workspace_version": number
                   }
                   Update: {
-                    "actor_id"?: string,"auth_url"?: string | null,"authority_stamp"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"expected_email"?: string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id"?: string,"remote_account"?: string | null,"remote_created"?: boolean,"remote_released_at"?: string | null,"remote_session"?: string | null,"state"?: string,"updated_at"?: string,"workspace_version"?: number
+                    "actor_id"?: string,"auth_url"?: string | null,"authority_stamp"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"expected_email"?: string,"expected_profile_url"?: string | null,"expires_at"?: string,"id"?: string,"lease_id"?: string | null,"lease_until"?: string | null,"next_poll_at"?: string | null,"person_id"?: string,"remote_account"?: string | null,"remote_session"?: string | null,"state"?: string,"updated_at"?: string,"workspace_version"?: number
                   }
                   Relationships: [
                     {
@@ -1095,22 +1095,11 @@ isOneToOne: false
 "list_outreach_people":
 { Args: { "p_client": string }; Returns: Json
                            },
-"list_outreach_remote_releases":
-{ Args: { "p_person": string }; Returns: {
-              "connection_id": string,"remote_account": string
-            }[]
-                           },
 "mark_outreach_conversation_read":
 { Args: { "p_client_id": string,"p_conversation_id": string }; Returns: undefined
                            },
 "mark_outreach_messages_read":
 { Args: { "ids": (string)[] }; Returns: number
-                           },
-"mark_outreach_remote_created":
-{ Args: { "p_id": string,"p_remote_account": string }; Returns: boolean
-                           },
-"mark_outreach_remote_released":
-{ Args: { "p_id": string }; Returns: boolean
                            },
 "next_outreach_network_campaign":
 { Args: Record<PropertyKey, never>; Returns: {
