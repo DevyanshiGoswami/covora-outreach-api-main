@@ -11,21 +11,40 @@ test('a disconnected account with a null or incomplete profile leaves pending', 
       { state: 'failed', failureCode: 'linkedin_disconnected' })
   }
 })
-test('only explicit PIN-required states expose code entry; connecting and syncing need no code', async () => {
-  for (const [status, nextStep] of [['Connecting', 'connecting'], ['Syncing', 'syncing'], ['PinRequired', 'verification_code'], ['PIN required', 'verification_code'], ['AwaitingPin', 'verification_code'], ['AwaitingVerification', 'check_status'], ['FutureStatus', 'check_status']]) {
+test('only explicit PIN-required states automatically request code entry', async () => {
+  for (const [status, nextStep] of [['Connecting', 'connecting'], ['Syncing', 'syncing'], ['PinRequired', 'verification_code'], ['PIN required', 'verification_code'], ['AwaitingPin', 'verification_code'], ['Challenged', 'check_status'], ['AwaitingVerification', 'check_status'], ['FutureStatus', 'check_status']]) {
     assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: statusFetch(status) }), { state: 'pending', nextStep })
   }
 })
-test('PIN submission checks the current account and never posts a code to a non-PIN state', async () => {
-  for (const status of ['Connecting', 'Syncing', 'FutureStatus', 'Disconnected']) {
+test('an explicitly entered code reaches SubmitPin even while status is cached or ambiguous', async () => {
+  for (const status of ['Connecting', 'Challenged', 'Syncing', 'FutureStatus', 'PinRequired']) {
     const calls: string[] = []
     const result = await connectAccount(scope, 'pin', { key: 'synthetic', fetch: async (url, init) => {
-      calls.push(String(url)); assert.equal(init?.method, 'GET')
+      calls.push(new URL(String(url)).pathname)
+      if (calls.length === 2) {
+        assert.equal(init?.method, 'POST')
+        assert.deepEqual(JSON.parse(String(init.body)), { accountId: 123, pin: '123456' })
+        return new Response(null, { status: 204 })
+      }
+      assert.equal(init?.method, 'GET')
       return Response.json({ accountId: 123, status, profile: { profileUrl: null } })
     } }, { pin: '123456' })
-    assert.equal(calls.length, 1)
-    assert.equal(result.state, status === 'Disconnected' ? 'failed' : 'pending')
-    assert.equal(result.nextStep === 'verification_code', false)
+    assert.deepEqual(calls, ['/api/public/li_account/GetAccountStatus/123', '/api/public/li_account/SubmitPin'])
+    assert.deepEqual(result, { state: 'pending', nextStep: 'connecting' })
+  }
+})
+test('a code is never sent for a disconnected, connected, mismatched or failed account', async () => {
+  for (const observation of [
+    { accountId: 123, status: 'Disconnected' },
+    { accountId: 123, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/test-person' } },
+    { accountId: 456, status: 'PinRequired' },
+    { accountId: 123, status: 'Connecting', failureReason: 'Failed' },
+  ]) {
+    let calls = 0
+    await connectAccount(scope, 'pin', { key: 'synthetic', fetch: async (_url, init) => {
+      calls++; assert.equal(init?.method, 'GET'); return Response.json(observation)
+    } }, { pin: '123456' })
+    assert.equal(calls, 1)
   }
 })
 test('malformed or unavailable status stays unresolved with an actionable error, never connected or requesting a code', async t => {
@@ -40,7 +59,7 @@ test('PIN rejected or no longer needed is safely recoverable and never retried a
   for (const status of [400, 409, 503]) {
     let calls = 0
     const result = await connectAccount(scope, 'pin', { key: 'synthetic', fetch: async () => {
-      return ++calls === 1 ? Response.json({ accountId: 123, status: 'PinRequired', profile: null }) : new Response(null, { status })
+      return ++calls === 1 ? Response.json({ accountId: 123, status: 'Challenged', profile: null }) : new Response(null, { status })
     } }, { pin: '123456' })
     assert.equal(calls, 2)
     assert.equal(result.state, 'pending')

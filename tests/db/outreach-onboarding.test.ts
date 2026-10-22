@@ -241,7 +241,7 @@ test('client invitation provisions a new login, enforces email, and never issues
   assert.equal((await handlers.invite(await request(client, 'invitations', { clientId: owner.client.id, email: 'no@example.test' }))).status, 403)
 })
 
-test('LinkedIn PIN flow completes with a disabled sender binding and no credentials in storage', async t => {
+test('a user-received LinkedIn PIN completes despite cached Connecting status, without sending permissions or stored credentials', async t => {
   const tenant = await setup(t)
   assert.ifError((await admin.from('outreach_reply_workspaces').insert({ client_id: tenant.client.id, channel: 'linkedin', credential_ref: 'OUTREACH_HEYREACH_TEST', remote_workspace_id: randomUUID(), enabled: true })).error)
   let connected = false; let pinCalls = 0; let connectCalls = 0
@@ -249,7 +249,7 @@ test('LinkedIn PIN flow completes with a disabled sender binding and no credenti
     const path = new URL(String(url)).pathname
     if (path.endsWith('/Connect')) { connectCalls++; return Response.json({ linkedInAccountId: '123' }) }
     if (path.endsWith('/SubmitPin')) { assert.equal(JSON.parse(String(init?.body)).accountId, 123); pinCalls++; connected = true; return new Response(null, { status: 204 }) }
-    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'PinRequired', profile: { profileUrl: connected ? 'https://www.linkedin.com/in/synthetic-person' : null } })
+    if (path.endsWith('/GetAccountStatus/123')) return Response.json({ accountId: 123, status: connected ? 'Connected' : 'Connecting', profile: { profileUrl: connected ? 'https://www.linkedin.com/in/synthetic-person' : null } })
     throw new Error('Unexpected provider path')
   }))
   const started = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', personId: tenant.person, channel: 'linkedin', email: tenant.user.email, password: 'synthetic-password-never-stored', country: 'US' }))
@@ -257,14 +257,14 @@ test('LinkedIn PIN flow completes with a disabled sender binding and no credenti
   async function release() { assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('person_id', tenant.person)).error) }
   await release()
   const awaiting = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'linkedin' }))
-  assert.equal((await awaiting.json()).nextStep, 'verification_code')
+  assert.equal((await awaiting.json()).nextStep, 'connecting')
   const reserved = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'linkedin', p_action: 'pin' })
   assert.ifError(reserved.error)
   const claim = reserved.data![0]; assert.ok(claim.claim_token)
   const busy = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
   assert.equal((await busy.json()).failureCode, 'linkedin_check_in_progress'); assert.equal(pinCalls, 0)
   assert.equal((await admin.rpc('finish_outreach_connection', { p_id: claim.connection_id, p_lease: claim.claim_token!, p_state: 'pending' })).data, true)
-  // Submit immediately after discovering the code request, inside the read cooldown.
+  // The user received a code before the cached status caught up, inside the read cooldown.
   const pin = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'pin', personId: tenant.person, channel: 'linkedin', pin: '123456' }))
   assert.equal(pin.status, 200, await pin.clone().text()); assert.equal(pinCalls, 1)
   await release()

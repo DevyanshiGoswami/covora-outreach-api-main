@@ -359,13 +359,14 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       }
       return { state: 'connected', remoteAccount: id, address: url.href }
     }
-    // The API documents status as free text. Recognize explicit PIN requests;
-    // an unknown status never implies a code was sent or permits a new login.
+    // Status is free text and cached by the service. Only explicit PIN states
+    // automatically request a code; a user who received one may submit it while
+    // status still says Connecting/Challenged. SubmitPin is authoritative (409
+    // when no PIN is awaited). This never starts another login or retries a PIN.
     const normalized = result.status.replace(/[\s_-]/g, '').toLowerCase()
     const nextStep: ConnectionNextStep = ['pinrequired', 'awaitingpin'].includes(normalized) ? 'verification_code'
       : normalized === 'syncing' ? 'syncing' : normalized === 'connecting' ? 'connecting' : 'check_status'
     if (action === 'pin') {
-      if (nextStep !== 'verification_code') return { state: 'pending', nextStep, failureCode: 'linkedin_code_not_requested' }
       if (!input.pin || !/^[0-9]{4,10}$/.test(input.pin)) return { state: 'pending', nextStep, failureCode: 'linkedin_code_rejected' }
       stage = 'linkedin_pin'
       await request('/li_account/SubmitPin', { accountId: Number(id), pin: input.pin })
