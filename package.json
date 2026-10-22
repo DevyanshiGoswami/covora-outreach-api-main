@@ -18,7 +18,9 @@
     "test": "npm run test:unit && npm run test:db",
     "gen:types": "node scripts/gen-types.mjs",
     "test:tooling": "node --test tests/tooling/*.test.mjs",
-    "test:env": "node scripts/write-test-env.mjs"
+    "test:env": "node scripts/write-test-env.mjs",
+    "logs:providers": "node scripts/provider-calls.mjs",
+    "provider:probe": "NODE_OPTIONS=--conditions=react-server tsx scripts/provider-probe.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.108.2",

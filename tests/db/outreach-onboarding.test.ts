@@ -131,6 +131,28 @@ test('Microsoft API flow returns a Microsoft sign-in link and connects the expec
   const completed = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'poll', personId: tenant.person, channel: 'email' }))
   assert.equal(completed.status, 200, await completed.clone().text()); assert.equal((await completed.json()).state, 'connected')
 })
+test('provider calls are recorded per connection with masked errors and stay server-only', async t => {
+  const tenant = await setup(t)
+  const handlers = createOnboardingHandlers(config(async (url) => {
+    const path = new URL(String(url)).pathname
+    if (path.endsWith('/workspaces/current')) return Response.json({ id: tenant.workspace }, { headers: { 'x-request-id': 'req-ws' } })
+    if (path.endsWith('/oauth/google/init')) return Response.json({ message: `Temporarily refused synthetic for ${tenant.user.email}` }, { status: 403, headers: { 'x-request-id': 'req-init' } })
+    throw new Error('Unexpected provider path')
+  }))
+  const response = await handlers.connection(await request(tenant.supabase, 'connections', { action: 'start', personId: tenant.person, channel: 'email' }))
+  assert.equal(response.status, 200, await response.clone().text())
+  const connection = await admin.from('outreach_connections').select('id').eq('person_id', tenant.person).single(); assert.ifError(connection.error)
+  const calls = await admin.from('outreach_provider_calls').select('*').eq('connection_id', connection.data!.id).order('id'); assert.ifError(calls.error)
+  assert.deepEqual(calls.data!.map(row => [row.source, row.channel, row.method, row.operation, row.http_status, row.outcome, row.request_id]), [
+    ['connection', 'email', 'GET', '/workspaces/current', 200, 'ok', 'x-request-id: req-ws'],
+    ['connection', 'email', 'POST', '/oauth/google/init', 403, 'http_error', 'x-request-id: req-init']])
+  assert.match(calls.data![1].error_excerpt!, /Temporarily refused \[redacted\] for \[email\]/)
+  const stored = JSON.stringify(calls.data); for (const secret of ['synthetic', tenant.user.email!]) assert.ok(!stored.includes(secret), secret)
+  for (const client of [tenant.supabase, anonClient()]) {
+    assert.equal((await client.from('outreach_provider_calls').select('*')).error?.code, '42501')
+    assert.equal((await client.from('outreach_provider_calls').insert({ source: 'probe', channel: 'email', method: 'GET', operation: '/x', outcome: 'ok', duration_ms: 1 })).error?.code, '42501')
+  }
+})
 test('stored sign-in links must come from Google or Microsoft', async t => {
   const tenant = await setup(t)
   const started = await tenant.supabase.rpc('prepare_outreach_connection', { p_person: tenant.person, p_channel: 'email', p_action: 'start' }); assert.ifError(started.error)

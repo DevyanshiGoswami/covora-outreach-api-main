@@ -6,6 +6,7 @@ import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, ty
 import { requireRuntimeDatabase } from './runtime-config'
 import { checkConnectionWorkspace, discoverEmailWorkspace, verifyConnectionWorkspace } from './onboarding-provider'
 import { resolveIntegrationCredential } from './integration-credentials'
+import { createProviderCallLogger } from './provider-call-log'
 import { portalContextSchema } from './onboarding-contract'
 
 export type AdminIntegrationConfig = OutboundApiConfig & { serviceKey: string; providerFetch?: typeof fetch }
@@ -61,7 +62,8 @@ export function createAdminIntegrationHandlers(config?: AdminIntegrationConfig) 
       if ((existing.data?.version ?? 0) !== value.version) throw new ApiError(400)
       if (value.action === 'save') {
         if (existing.data && existing.data.channel !== value.channel) throw new ApiError(400)
-        const options = { key: value.apiKey, fetch: config?.providerFetch, signal: request.signal }
+        const options = { key: value.apiKey, fetch: config?.providerFetch, signal: request.signal,
+          log: createProviderCallLogger(admin, { source: 'integration_check', integrationId: value.id }) }
         const workspace = value.channel === 'email' ? await discoverEmailWorkspace(options) : existing.data?.remote_workspace_id ?? value.workspaceId
         if (!workspace || (existing.data && existing.data.remote_workspace_id !== workspace)) {
           return json({ code: 'key_verification_failed', error: 'The API key could not be verified for this workspace. Check its permissions and try again.' }, 400)
@@ -81,7 +83,8 @@ export function createAdminIntegrationHandlers(config?: AdminIntegrationConfig) 
         return json({ ok:true })
       }
       const key = await resolveIntegrationCredential(existing.data.credential_ref, {}, admin)
-      const ok = Boolean(key && await checkConnectionWorkspace(existing.data.channel as 'email'|'linkedin', existing.data.remote_workspace_id, { key, fetch:config?.providerFetch,signal:request.signal }))
+      const ok = Boolean(key && await checkConnectionWorkspace(existing.data.channel as 'email'|'linkedin', existing.data.remote_workspace_id, { key, fetch:config?.providerFetch,signal:request.signal,
+        log: createProviderCallLogger(admin, { source: 'integration_check', integrationId: value.id }) }))
       const checked = await admin.rpc('check_outreach_integration', { ...actor,p_id:value.id,p_version:value.version,p_ok:ok }); checkDatabaseError(checked.error)
       return json({ ok:true, verified:ok })
     }),

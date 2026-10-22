@@ -7,6 +7,7 @@ import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, ty
 import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
 import { checkConnectionWorkspace, connectAccount, emailAuthorizationUrl, reviewEmailAccount, type ConnectionResult } from './onboarding-provider'
+import { createProviderCallLogger } from './provider-call-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
@@ -137,7 +138,8 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       const option = (await options(config)).find(row => row.id === value.optionId)
       if (!option) throw new ApiError(400)
       const key = await credential(option.credentialRef, config)
-      if (!key || !await checkConnectionWorkspace(option.channel, option.workspaceId, { key, fetch: config?.providerFetch, signal: request.signal })) {
+      if (!key || !await checkConnectionWorkspace(option.channel, option.workspaceId, { key, fetch: config?.providerFetch, signal: request.signal,
+        log: createProviderCallLogger(service(config), { source: 'integration_check', integrationId: option.id }) })) {
         return json({ error: 'Provider authentication failed. Ask your deployment administrator to check the configured key and workspace.' }, 400)
       }
       const result = await service(config).rpc('bind_outreach_connection_workspace', { p_actor: actor.userId, p_client: value.clientId,
@@ -177,7 +179,8 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
           const scope = privateContext.safeParse(read.data)
           if (!scope.success) throw new ApiError(403)
           const key = await credential(scope.data.credential, config)
-          const result = key ? await reviewEmailAccount(scope.data, { key, fetch: config?.providerFetch, signal: request.signal })
+          const result = key ? await reviewEmailAccount(scope.data, { key, fetch: config?.providerFetch, signal: request.signal,
+            log: createProviderCallLogger(admin, { source: 'email_review', connectionId: claim.connection_id }) })
             : { outcome: 'unavailable' as const, failureCode: 'key_rejected' as const }
           outcome = result.outcome; failureCode = result.failureCode
           const finished = await admin.rpc('finish_outreach_email_review', { p_id: claim.connection_id, p_lease: claim.claim_token, p_outcome: outcome })
@@ -215,7 +218,8 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
         const scope = privateContext.safeParse(result.data)
         if (!scope.success) throw new ApiError(403)
         const key = await credential(scope.data.credential, config)
-        const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal }, {
+        const observation: ConnectionResult = key ? await connectAccount(scope.data, value.action, { key, fetch: config?.providerFetch, signal: request.signal,
+          log: createProviderCallLogger(admin, { source: 'connection', connectionId: claim.connection_id }) }, {
           ...('password' in value ? { password: value.password, country: value.country } : {}),
           ...('cookies' in value ? { cookies: value.cookies, country: value.country, userAgent: value.userAgent } : {}),
           ...('pin' in value ? { pin: value.pin } : {}),

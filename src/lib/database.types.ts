@@ -632,6 +632,25 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_provider_calls": {
+                  Row: {
+                    "channel": string,"connection_id": string | null,"created_at": string,"duration_ms": number,"error_excerpt": string | null,"http_status": number | null,"id": number,"integration_id": string | null,"method": string,"operation": string,"outcome": string,"request_id": string | null,"source": string
+                  }
+                  Insert: {
+                    "channel": string,"connection_id"?: string | null,"created_at"?: string,"duration_ms": number,"error_excerpt"?: string | null,"http_status"?: number | null,"id"?: never,"integration_id"?: string | null,"method": string,"operation": string,"outcome": string,"request_id"?: string | null,"source": string
+                  }
+                  Update: {
+                    "channel"?: string,"connection_id"?: string | null,"created_at"?: string,"duration_ms"?: number,"error_excerpt"?: string | null,"http_status"?: number | null,"id"?: never,"integration_id"?: string | null,"method"?: string,"operation"?: string,"outcome"?: string,"request_id"?: string | null,"source"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_provider_calls_connection_id_fkey"
+      columns: ["connection_id"]
+isOneToOne: false
+      referencedRelation: "outreach_connections"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_reply_commands": {
                   Row: {
                     "actor_user_id": string,"authority_stamp": string,"body_text": string,"channel": string,"claim_token": string | null,"client_id": string,"conversation_id": string,"conversation_version": number,"created_at": string,"error_code": string | null,"expires_at": string | null,"id": string,"latest_message_id": string,"remote_message_id": string | null,"sender_id": string,"sender_version": number,"status": string,"updated_at": string,"workspace_version": number

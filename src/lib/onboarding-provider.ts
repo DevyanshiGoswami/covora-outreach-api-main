@@ -1,6 +1,7 @@
 import 'server-only'
 import { z } from 'zod'
 import { linkedinCookies, linkedinProfileUrl, type LinkedInCookie } from './linkedin-session'
+import { normalizeProviderPath, providerRequestId, redactProviderText, type ProviderCallEntry, type ProviderCallLogger } from './provider-call-log'
 
 export type ConnectionState = 'pending' | 'connected' | 'failed' | 'expired' | 'uncertain'
 type LinkedInFailureCode = 'linkedin_profile_mismatch' | 'linkedin_access_denied' | 'linkedin_session_rejected' | 'linkedin_location_unavailable' | 'linkedin_request_rejected'
@@ -13,7 +14,7 @@ export type ConnectionContext = {
   remoteSession: string | null; remoteAccount: string | null
   expectedProfileUrl?: string | null
 }
-export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number }
+export type ProviderOptions = { key: string; fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; log?: ProviderCallLogger }
 export type EmailProvider = 'google' | 'microsoft'
 class ProviderFailure extends Error {
   constructor(readonly state: 'failed' | 'uncertain', readonly status?: number, readonly failureCode?: ConnectionFailureCode) { super('Connection unavailable') }
@@ -81,43 +82,94 @@ function linkedinRequestFailure(raw: string): LinkedInFailureCode {
   return 'linkedin_request_rejected'
 }
 
+const SENSITIVE_FIELD = /^(value|password|pin|username|email|useragent|twofactorauthkey)$/i
+/** Values of credential or identity fields in a request body, wherever they are nested. */
+function sensitiveValues(value: unknown, field = '', depth = 0): string[] {
+  if (typeof value === 'string') return SENSITIVE_FIELD.test(field) ? [value] : []
+  if (depth > 4 || !value || typeof value !== 'object') return []
+  return Object.entries(value).flatMap(([key, item]) => sensitiveValues(item, Array.isArray(value) ? field : key, depth + 1))
+}
+
+/** Bounded read of an error body; null when it is missing, oversized or not UTF-8. */
+async function readErrorText(response: Response, limit: number): Promise<string | null> {
+  try { return await readProviderText(response, limit) }
+  catch { await response.body?.cancel().catch(() => {}); return null }
+}
+
 function transport(channel: 'email' | 'linkedin', options: ProviderOptions) {
   const signal = AbortSignal.any([AbortSignal.timeout(Math.min(options.timeoutMs ?? 12000, 12000)), ...(options.signal ? [options.signal] : [])])
   return async (path: string, body?: unknown): Promise<unknown> => {
-    const response = await (options.fetch ?? fetch)(`${channel === 'email' ? 'https://api.instantly.ai/api/v2' : 'https://api.heyreach.io/api/public'}${path}`, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', ...(channel === 'email' ? { Authorization: `Bearer ${options.key}` } : { 'X-API-KEY': options.key }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal, cache: 'no-store', redirect: 'error',
-    })
+    const method = body === undefined ? 'GET' : 'POST'
+    const started = performance.now()
+    // Masked diagnostics only: the key, request body and raw identifiers never reach the log.
+    // Anything this request sent is scrubbed first, in case the provider echoes it back.
+    const sent = [options.key, ...sensitiveValues(body)].filter(value => value.length >= 6).sort((a, b) => b.length - a.length)
+    const record = async (status: number | null, outcome: ProviderCallEntry['outcome'], requestId: string | null, errorText: string | null) => {
+      try {
+        const scrubbed = errorText === null ? null : sent.reduce((text, value) => text.split(value).join('[redacted]'), errorText)
+        await options.log?.({ channel, method, operation: normalizeProviderPath(path), status, outcome,
+          durationMs: Math.round(performance.now() - started), requestId, errorExcerpt: scrubbed === null ? null : redactProviderText(scrubbed) })
+      } catch { /* Diagnostics never change a provider outcome. */ }
+    }
+    let response: Response
+    try {
+      response = await (options.fetch ?? fetch)(`${channel === 'email' ? 'https://api.instantly.ai/api/v2' : 'https://api.heyreach.io/api/public'}${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(channel === 'email' ? { Authorization: `Bearer ${options.key}` } : { 'X-API-KEY': options.key }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal, cache: 'no-store', redirect: 'error',
+      })
+    } catch (error) {
+      await record(null, signal.aborted ? 'timeout' : 'network_error', null, null)
+      throw error
+    }
+    const requestId = providerRequestId(response.headers)
     // The authentication guide documents 200; the endpoint reference lists 204.
     // This endpoint proves validity through its status, not a JSON response body.
     if (channel === 'linkedin' && path === '/auth/CheckApiKey') {
-      await response.body?.cancel()
-      if (response.status === 200 || response.status === 204) return null
+      if (response.status === 200 || response.status === 204) {
+        await response.body?.cancel()
+        await record(response.status, 'ok', requestId, null)
+        return null
+      }
+      await record(response.status, 'http_error', requestId, await readErrorText(response, 16384))
       console.warn('Integration key verification rejected', { channel, status: response.status })
       throw new ProviderFailure('failed', response.status)
     }
     if (!response.ok) {
+      const errorText = await readErrorText(response, channel === 'linkedin' ? 16384 : 65536)
+      await record(response.status, 'http_error', requestId, errorText)
       let failureCode: ConnectionFailureCode | undefined
       if (channel === 'email' && [401, 403].includes(response.status)) {
         // Inspect only a bounded response and return fixed codes. Never expose service text.
         try {
-          const body = z.object({ message: z.string().max(2000) }).safeParse(await readProviderJson(response))
+          const body = z.object({ message: z.string().max(2000) }).safeParse(JSON.parse(errorText ?? ''))
           if (body.success && body.data.message.startsWith('Invalid scope.')) {
             failureCode = body.data.message.startsWith('Invalid scope. Required: accounts:create.') ? 'account_create_required'
               : body.data.message.startsWith('Invalid scope. Required: accounts:read.') ? 'account_read_required' : 'access_denied'
           }
         } catch { /* The HTTP status remains authoritative when the error body is malformed. */ }
       } else if (channel === 'linkedin' && [400, 422].includes(response.status)) {
-        failureCode = 'linkedin_request_rejected'
-        try { failureCode = linkedinRequestFailure(await readProviderText(response, 16384)) }
-        catch { /* An unreadable rejection must not be described as bad cookies. */ }
-      } else await response.body?.cancel()
+        // An unreadable rejection must not be described as bad cookies.
+        failureCode = errorText === null ? 'linkedin_request_rejected' : linkedinRequestFailure(errorText)
+      }
       throw new ProviderFailure([400, 401, 403, 409, 422, 429].includes(response.status) ? 'failed' : 'uncertain', response.status, failureCode)
     }
+    await record(response.status, 'ok', requestId, null)
     if (response.status === 204) return null
     return readProviderJson(response)
   }
+}
+
+/**
+ * Read-only check of what a HeyReach key may do: the key itself, then an Account Login API
+ * endpoint with a placeholder account. Never logs in, connects or creates anything.
+ */
+export async function probeLinkedInAccess(options: ProviderOptions): Promise<{ key: number | null; accountLogin: number | null }> {
+  const request = transport('linkedin', options)
+  const statusOf = async (path: string) => {
+    try { await request(path); return 200 } catch (error) { return error instanceof ProviderFailure ? error.status ?? null : null }
+  }
+  return { key: await statusOf('/auth/CheckApiKey'), accountLogin: await statusOf('/li_account/GetAccountStatus/1') }
 }
 
 /** Validate credentials without creating accounts, campaigns or billable workspaces. */
