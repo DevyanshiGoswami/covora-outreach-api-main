@@ -161,3 +161,116 @@ test('a remote identity stays exclusive while removal is pending or uncertain',a
     assert.equal(takeover.error?.code,'23505')
   }
 })
+
+async function unfinished(f: Awaited<ReturnType<typeof fixture>>, state: 'pending' | 'failed' = 'pending', remote: string | null = String(Math.floor(Math.random()*1e12)+1)) {
+  const claim = await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'start', p_email: f.member.user.email })
+  assert.ifError(claim.error)
+  const c = claim.data![0]
+  assert.equal((await admin.rpc('finish_outreach_connection', { p_id: c.connection_id, p_lease: c.claim_token!, p_state: state, ...(remote ? { p_remote_account: remote } : {}) })).data, true)
+  return { id: c.connection_id, remote }
+}
+
+test('an unfinished LinkedIn login can be cancelled by its member and a different email can start only after confirmed removal', async t => {
+  const f = await fixture(t), c = await unfinished(f), peer = await createAdmin(t)
+  await grantOutreachMembership(peer.user.id, f.tenant.client.id, 'client_member')
+  assert.equal((await peer.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })).error?.code, '42501')
+  const people = await f.member.supabase.rpc('list_outreach_people', { p_client: f.tenant.client.id })
+  const connection = (people.data as unknown as { connections: { canCancel: boolean; loginEmail: string }[] }[])[0].connections[0]
+  assert.equal(connection.canCancel, true); assert.equal(connection.loginEmail, f.member.user.email)
+  const cancel = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(cancel.error); assert.equal(cancel.data![0].perform_delete, true)
+  const different = 'another-' + randomUUID() + '@example.test'
+  assert.equal((await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'start', p_email: different })).error?.code, '22023')
+  assert.equal((await admin.rpc('finish_outreach_disconnect', { p_id: c.id, p_lease: cancel.data![0].claim_token!, p_outcome: 'removed' })).data, true)
+  const next = await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'start', p_email: different })
+  assert.ifError(next.error); assert.ok(next.data![0].claim_token)
+  assert.equal((await admin.from('outreach_connections').select('expected_email').eq('id', next.data![0].connection_id).single()).data?.expected_email, different)
+  // Replayed old confirmation cannot affect the replacement.
+  assert.equal((await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })).data?.[0].perform_delete, false)
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', f.person.id).single()).data?.email, different)
+})
+
+test('rejected cancellation restores the failed state; uncertain removal cannot repeat DELETE', async t => {
+  const f = await fixture(t), c = await unfinished(f, 'failed')
+  const claim = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(claim.error)
+  assert.equal((await admin.rpc('finish_outreach_disconnect', { p_id: c.id, p_lease: claim.data![0].claim_token!, p_outcome: 'rejected' })).data, true)
+  assert.equal((await admin.from('outreach_connections').select('state').eq('id', c.id).single()).data?.state, 'failed')
+  const retry = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(retry.error); assert.equal(retry.data![0].perform_delete, true)
+  assert.equal((await admin.rpc('finish_outreach_disconnect', { p_id: c.id, p_lease: retry.data![0].claim_token!, p_outcome: 'uncertain' })).data, true)
+  const check = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(check.error); assert.equal(check.data![0].perform_delete, false)
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', f.person.id)).data?.length, 1)
+})
+
+test('a definite failure with no remote account can be cleared locally; unknown attempts and connected accounts cannot use cancel', async t => {
+  const f = await fixture(t), c = await unfinished(f, 'failed', null)
+  const done = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(done.error); assert.equal(done.data![0].claim_token, null)
+  assert.equal((await admin.from('outreach_connections').select('state').eq('id', c.id).single()).data?.state, 'disconnected')
+  const next = await unfinished(f, 'pending', null)
+  assert.equal((await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: next.id, p_action: 'cancel' })).error?.code, '22023')
+  assert.ifError((await admin.from('outreach_connections').update({ state: 'failed' }).eq('id', next.id)).error)
+  await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: next.id, p_action: 'cancel' })
+  const connected = await f.connect('linkedin')
+  assert.equal((await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: connected, p_action: 'cancel' })).error?.code, '22023')
+})
+
+test('a live status lease blocks cancellation and an old unfinished dialog cannot cancel a newer attempt', async t => {
+  const f = await fixture(t), c = await unfinished(f)
+  assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', c.id)).error)
+  const poll = await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'poll' })
+  assert.ifError(poll.error); assert.ok(poll.data![0].claim_token)
+  const cancel = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(cancel.error); assert.equal(cancel.data![0].claim_token, null)
+  await admin.rpc('finish_outreach_connection', { p_id: c.id, p_lease: poll.data![0].claim_token!, p_state: 'failed' })
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-61000).toISOString() }).eq('id', c.id)).error)
+  await unfinished(f)
+  assert.equal((await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })).error?.code, '22023')
+})
+
+test('a confirmed disconnect makes earlier failures obsolete when a later rejected login changes email', async t => {
+  const f = await fixture(t), first = await unfinished(f, 'failed')
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-120000).toISOString() }).eq('id', first.id)).error)
+  const connected = await f.connect('linkedin')
+  const cancel = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: connected, p_action: 'disconnect' })
+  assert.ifError(cancel.error)
+  await admin.rpc('finish_outreach_disconnect', { p_id: connected, p_lease: cancel.data![0].claim_token!, p_outcome: 'removed' })
+  const rejected = await unfinished(f, 'failed', null)
+  // A historical failed remote sender must not re-lock this person's email after disconnect.
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-60000).toISOString() }).eq('id', connected)).error)
+  assert.ifError((await admin.from('outreach_connections').update({ created_at: new Date(Date.now()-31000).toISOString() }).eq('id', rejected.id)).error)
+  const next = await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'start', p_email: 'replacement-'+randomUUID()+'@example.test' })
+  assert.ifError(next.error); assert.ok(next.data![0].claim_token)
+})
+
+test('cancel API verifies the exact unfinished sender, deletes once, and confirms absence before switching', async t => {
+  const f = await fixture(t), c = await unfinished(f, 'failed'), env = loadTestEnv(), stranger = await createAdmin(t)
+  const w = await admin.from('outreach_reply_workspaces').select('credential_ref').eq('client_id', f.tenant.client.id).eq('channel', 'linkedin').single()
+  assert.ifError(w.error)
+  let removed = false, calls = 0, deletes = 0
+  const h = createOnboardingHandlers({ url: env.URL, anonKey: env.ANON, serviceKey: env.SERVICE, fetch,
+    credentials: { [w.data!.credential_ref]: 'synthetic' }, providerFetch: async (input, init) => {
+      calls++; const url = new URL(String(input))
+      if (url.pathname.endsWith('/auth/CheckApiKey')) return new Response(null, { status: 204 })
+      if (init?.method === 'DELETE') { assert.ok(url.pathname.endsWith('/RemoveAccount/'+c.remote)); assert.equal(url.searchParams.get('force'), 'false'); deletes++; removed = true; return new Response(null, { status: 204 }) }
+      assert.equal(url.searchParams.get('accountId'), c.remote)
+      return removed ? Response.json({}, { status: 404 }) : Response.json({ id: c.remote, emailAddress: f.member.user.email, profileUrl: null, activeCampaigns: 0 })
+    } })
+  const send = async (actor: typeof f.member) => h.connection(new Request('http://localhost/api/onboarding/connections', { method: 'POST', headers: { authorization: 'Bearer '+(await actor.supabase.auth.getSession()).data.session!.access_token, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'cancel', connectionId: c.id }) }))
+  assert.equal((await send(stranger)).status, 403); assert.equal(calls, 0)
+  const result = await send(f.member); assert.equal(result.status, 200)
+  const body = await result.json(); assert.equal(body.state, 'disconnected'); assert.equal(body.remoteAccount, undefined); assert.equal(deletes, 1)
+  assert.equal((await send(f.member)).status, 200); assert.equal(deletes, 1)
+})
+
+test('a rejected pending cancellation restores the member sign-in authority for status checks', async t => {
+  const f = await fixture(t), c = await unfinished(f)
+  const cancel = await f.member.supabase.rpc('prepare_outreach_disconnect', { p_connection: c.id, p_action: 'cancel' })
+  assert.ifError(cancel.error)
+  assert.equal((await admin.rpc('finish_outreach_disconnect', { p_id: c.id, p_lease: cancel.data![0].claim_token!, p_outcome: 'rejected' })).data, true)
+  assert.ifError((await admin.from('outreach_connections').update({ next_poll_at: new Date(0).toISOString() }).eq('id', c.id)).error)
+  const poll = await f.member.supabase.rpc('prepare_outreach_connection', { p_person: f.person.id, p_channel: 'linkedin', p_action: 'poll' })
+  assert.ifError(poll.error); assert.ok(poll.data![0].claim_token)
+})
