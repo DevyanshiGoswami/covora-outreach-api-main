@@ -304,6 +304,7 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
           'Connection retry too soon': 'connection_retry_later',
           'Wait before starting another connection': 'connection_retry_later',
           'LinkedIn identity requires review': 'linkedin_identity_locked',
+          'Connection check in progress': 'linkedin_check_in_progress',
           'Connection identity reserved': 'connection_identity_reserved',
         }
         const failureCode = Object.hasOwn(failures, prepared.error.message) ? failures[prepared.error.message] : undefined
