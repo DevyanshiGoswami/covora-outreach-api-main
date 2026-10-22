@@ -253,7 +253,13 @@ async function linkedinSenders(options: ProviderOptions): Promise<{ id: string; 
  */
 export async function reviewLinkedinAttempt(context: ConnectionContext, options: ProviderOptions): Promise<
   { outcome: 'restore'; remoteAccount: string } | { outcome: 'missing' | 'unavailable' }> {
-  if (context.remoteAccount) return { outcome: 'restore', remoteAccount: remoteId.parse(context.remoteAccount) }
+  if (context.remoteAccount) {
+    // A previously failed observation may actually be a verification challenge.
+    // Recheck the same sender before restoring it; never create/adopt another one.
+    const result = await connectAccount(context, 'poll', options)
+    return result.state === 'connected' || (result.state === 'pending' && !result.failureCode)
+      ? { outcome: 'restore', remoteAccount: remoteId.parse(context.remoteAccount) } : { outcome: 'unavailable' }
+  }
   const list = await linkedinSenders(options)
   if (!list) return { outcome: 'unavailable' }
   const matches = list.filter(sender => sender.email === context.email)
@@ -348,7 +354,12 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
       profile: z.unknown().optional(),
     }).parse(await request(`/li_account/GetAccountStatus/${id}`))
     if (result.accountId !== id) return { state: 'failed' }
-    if (result.failureReason || result.status === 'Disconnected') return { state: 'failed', failureCode: 'linkedin_disconnected' }
+    const normalized = result.status.replace(/[\s_-]/g, '').toLowerCase()
+    const verificationPending = ['challenged', 'pinrequired', 'awaitingpin', 'awaitingverification'].includes(normalized)
+    // Challenge metadata can be returned in failureReason while the sign-in is
+    // still awaiting the user's code/app approval. Keep that same attempt open.
+    if (normalized === 'disconnected' || normalized === 'failed' || (result.failureReason && !verificationPending))
+      return { state: 'failed', failureCode: 'linkedin_disconnected' }
     if (result.status === 'Connected') {
       const profileResult = z.object({ profileUrl: z.string() }).parse(result.profile)
       const url = new URL(profileResult.profileUrl)
@@ -364,7 +375,6 @@ export async function connectAccount(context: ConnectionContext, action: 'start'
     // automatically request a code; a user who received one may submit it while
     // status still says Connecting/Challenged. SubmitPin is authoritative (409
     // when no PIN is awaited). This never starts another login or retries a PIN.
-    const normalized = result.status.replace(/[\s_-]/g, '').toLowerCase()
     const nextStep: ConnectionNextStep = ['pinrequired', 'awaitingpin'].includes(normalized) ? 'verification_code'
       : normalized === 'syncing' ? 'syncing' : normalized === 'connecting' ? 'connecting' : 'check_status'
     if (action === 'pin') {

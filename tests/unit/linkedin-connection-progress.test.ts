@@ -16,6 +16,25 @@ test('only explicit PIN-required states automatically request code entry', async
     assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: statusFetch(status) }), { state: 'pending', nextStep })
   }
 })
+test('verification challenge descriptions are not terminal failures and preserve explicit PIN submission', async () => {
+  for (const status of ['Challenged', 'AwaitingVerification', 'PinRequired', 'AwaitingPin']) {
+    const observation = { accountId: 123, status, failureReason: 'LinkedIn verification challenge', profile: { profileUrl: null } }
+    const polled = await connectAccount(scope, 'poll', { key: 'synthetic', fetch: async () => Response.json(observation) })
+    assert.equal(polled.state, 'pending'); assert.equal(polled.failureCode, undefined)
+    let reads = 0, submissions = 0
+    const submitted = await connectAccount(scope, 'pin', { key: 'synthetic', fetch: async (_url, init) => {
+      if (init?.method === 'POST') { submissions++; return new Response(null, { status: 204 }) }
+      reads++; return Response.json(observation)
+    } }, { pin: '123456' })
+    assert.deepEqual(submitted, { state: 'pending', nextStep: 'connecting' })
+    assert.equal(reads, 1); assert.equal(submissions, 1)
+  }
+  for (const status of ['Disconnected', 'Failed']) {
+    assert.deepEqual(await connectAccount(scope, 'poll', { key: 'synthetic', fetch: async () =>
+      Response.json({ accountId: 123, status, failureReason: 'LinkedIn verification challenge' }) }),
+      { state: 'failed', failureCode: 'linkedin_disconnected' })
+  }
+})
 test('an explicitly entered code reaches SubmitPin even while status is cached or ambiguous', async () => {
   for (const status of ['Connecting', 'Challenged', 'Syncing', 'FutureStatus', 'PinRequired']) {
     const calls: string[] = []

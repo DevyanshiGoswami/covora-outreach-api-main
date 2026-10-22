@@ -14,10 +14,28 @@ function heyreach(routes: Record<string, () => Response>, calls: string[] = []):
 }
 const list = (items: { id: number; emailAddress?: string | null }[]) => () => Response.json({ totalCount: items.length, items })
 
-test('a stuck attempt with a known sender is restored without any provider call', async () => {
+test('a stuck attempt with a known sender is restored only after a read-only status check', async () => {
   const calls: string[] = []
-  assert.deepEqual(await reviewLinkedinAttempt({ ...context, remoteAccount: '42' }, { key: 'k', fetch: heyreach({}, calls) }), { outcome: 'restore', remoteAccount: '42' })
-  assert.deepEqual(calls, [])
+  assert.deepEqual(await reviewLinkedinAttempt({ ...context, remoteAccount: '42' }, { key: 'k', fetch: heyreach({
+    'GET /li_account/GetAccountStatus/42': () => Response.json({ accountId: 42, status: 'Challenged', failureReason: 'Verification required', profile: null }),
+  }, calls) }), { outcome: 'restore', remoteAccount: '42' })
+  assert.deepEqual(calls, ['GET /li_account/GetAccountStatus/42'])
+})
+
+test('failed or mismatched known senders cannot be restored, replaced or deleted by review', async t => {
+  t.mock.method(console, 'warn', () => {})
+  for (const observation of [
+    Response.json({ accountId: 42, status: 'Disconnected' }),
+    Response.json({ accountId: 42, status: 'Failed' }),
+    Response.json({ accountId: 43, status: 'Challenged' }),
+    Response.json({ accountId: 42, status: 'Connected', profile: { profileUrl: 'https://www.linkedin.com/in/other-person' } }),
+    new Response(null, { status: 503 }),
+  ]) {
+    const calls: string[] = []
+    assert.deepEqual(await reviewLinkedinAttempt({ ...context, remoteAccount: '42', expectedProfileUrl: 'https://www.linkedin.com/in/test-person' },
+      { key: 'k', fetch: heyreach({ 'GET /li_account/GetAccountStatus/42': () => observation }, calls) }), { outcome: 'unavailable' })
+    assert.deepEqual(calls, ['GET /li_account/GetAccountStatus/42'])
+  }
 })
 
 test('ambiguous sender matches remain unresolved instead of choosing an account', async () => {

@@ -99,6 +99,90 @@ test('an attempt whose request died after HeyReach accepted it is restored with 
   assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
 })
 
+test('a challenged sign-in stays pending and an older failed observation resumes the same login for verification', async t => {
+  const s = await person(t), outsider = await createTenant(t, { features: ['outreach_app'] }), calls: string[] = []
+  let status = 'Challenged'
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 613 })),
+    liStatus(() => Response.json({ accountId: 613, status, failureReason: status === 'Challenged' ? 'Verification required' : null,
+      profile: { profileUrl: status === 'Connected' ? 'https://www.linkedin.com/in/test-person' : null } })),
+    [/^POST \/li_account\/SubmitPin$/, (_url, init) => {
+      assert.deepEqual(JSON.parse(String(init?.body)), { accountId: 613, pin: '123456' })
+      status = 'Syncing'; return new Response(null, { status: 204 })
+    }],
+  ], calls)
+  await act(h, s.supabase, password(s.person, s.email)); await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'pending')
+  // Reproduce the old version's terminal classification, not a manual repair.
+  await touch(s.person, 'linkedin', { state: 'failed' }); await cooledDown(s.person, 'linkedin'); await pollReady(s.person, 'linkedin')
+  const before = await latest(s.person, 'linkedin'), beforeCalls = calls.length
+  assert.equal((await act(h, outsider.supabase, liReview(s.person))).http, 403); assert.equal(calls.length, beforeCalls)
+  assert.equal((await act(h, s.supabase, password(s.person, 'different@example.test'))).failureCode, 'linkedin_identity_locked')
+  assert.equal(calls.length, beforeCalls)
+  const review = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([review.state, review.reviewStatus], ['pending', 'restored'])
+  assert.equal((await latest(s.person, 'linkedin')).id, before.id)
+  assert.equal((await latest(s.person, 'linkedin')).remote_account, '613')
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', s.person).single()).data?.email, s.email)
+  assert.equal((await act(h, s.supabase, { action: 'pin', personId: s.person, channel: 'linkedin', pin: '123456' })).state, 'pending')
+  status = 'Connected'; await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'connected')
+  assert.equal(calls.filter(c => c === 'POST /li_account/Connect').length, 1)
+  assert.equal(calls.filter(c => c === 'POST /li_account/SubmitPin').length, 1)
+  assert.equal(calls.some(c => c.startsWith('DELETE')), false)
+})
+
+test('review of a genuinely failed sender keeps its state and login reservation', async t => {
+  const s = await person(t), calls: string[] = []
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 614 })), liStatus(li(614, 'Disconnected'))], calls)
+  await act(h, s.supabase, password(s.person, s.email)); await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'failed')
+  await pollReady(s.person, 'linkedin')
+  const review = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([review.state, review.reviewStatus], ['failed', 'unavailable'])
+  assert.equal((await admin.from('outreach_connection_reservations').select('email').eq('person_id', s.person).single()).data?.email, s.email)
+  assert.equal(calls.filter(c => c === 'POST /li_account/Connect').length, 1)
+  assert.equal(calls.some(c => c.startsWith('DELETE')), false)
+})
+
+test('review leases block new logins and require the existing identity reservation', async t => {
+  const s = await person(t)
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 615 })), liStatus(li(615, 'Disconnected'))])
+  await act(h, s.supabase, password(s.person, s.email)); await pollReady(s.person, 'linkedin')
+  await act(h, s.supabase, liPoll(s.person)); await pollReady(s.person, 'linkedin'); await cooledDown(s.person, 'linkedin')
+  const claim = await s.supabase.rpc('prepare_outreach_linkedin_review', { p_person: s.person })
+  assert.ifError(claim.error); assert.ok(claim.data![0].claim_token)
+  const calls: string[] = []
+  const concurrent = await act(handlers([], calls), s.supabase, password(s.person, s.email))
+  assert.deepEqual([concurrent.http, concurrent.failureCode], [400, 'linkedin_check_in_progress'])
+  assert.deepEqual(calls, [])
+  assert.equal((await admin.rpc('finish_outreach_linkedin_review', { p_id: claim.data![0].connection_id,
+    p_lease: claim.data![0].claim_token!, p_outcome: 'unavailable' })).data, true)
+  await pollReady(s.person, 'linkedin')
+  assert.ifError((await admin.from('outreach_connection_reservations').delete().eq('person_id', s.person)).error)
+  assert.equal((await s.supabase.rpc('prepare_outreach_linkedin_review', { p_person: s.person })).error?.code, '42501')
+})
+
+test('an expired verification window can resume its exact still-challenged sender without another login', async t => {
+  const s = await person(t), calls: string[] = []
+  const h = handlers([senders([]), connect(json({ linkedInAccountId: 616 })), liStatus(li(616, 'Challenged'))], calls)
+  await act(h, s.supabase, password(s.person, s.email)); await windowPassed(s.person, 'linkedin'); await pollReady(s.person, 'linkedin')
+  assert.equal((await act(h, s.supabase, liPoll(s.person))).state, 'expired')
+  const previous = await latest(s.person, 'linkedin')
+  const claim = await s.supabase.rpc('prepare_outreach_linkedin_review', { p_person: s.person })
+  assert.ifError(claim.error); assert.ok(claim.data![0].claim_token)
+  assert.equal((await act(h, s.supabase, password(s.person, s.email))).failureCode, 'linkedin_check_in_progress')
+  assert.equal((await admin.rpc('finish_outreach_linkedin_review', { p_id: previous.id,
+    p_lease: claim.data![0].claim_token!, p_outcome: 'unavailable' })).data, true)
+  assert.equal((await latest(s.person, 'linkedin')).state, 'expired')
+  await pollReady(s.person, 'linkedin')
+  const review = await act(h, s.supabase, liReview(s.person))
+  assert.deepEqual([review.state, review.reviewStatus], ['pending', 'restored'])
+  assert.equal((await latest(s.person, 'linkedin')).id, previous.id)
+  assert.equal((await latest(s.person, 'linkedin')).remote_account, '616')
+  assert.equal(calls.filter(c => c === 'POST /li_account/Connect').length, 1)
+  assert.equal(calls.some(c => c.startsWith('DELETE')), false)
+})
+
 test('failed and expired LinkedIn attempts never remove an external account implicitly', async t => {
   let shared: { workspace: string; linkedinWorkspace: string } | undefined
   for (const state of ['failed', 'expired'] as const) {
