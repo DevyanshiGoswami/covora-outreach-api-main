@@ -17,7 +17,7 @@ let query = admin.from('outreach_invitation_events')
   .order('created_at', { ascending: false }).limit(limit)
 if (process.argv.includes('--failed')) query = query.eq('outcome', 'failed')
 const { data, error } = await query
-if (error) throw new Error(`Could not read invitation events (${error.code ?? 'unknown'}). Is migration 0128 applied?`)
+if (error) throw new Error(`Could not read invitation events (${error.code ?? 'unknown'}). Is migration 0134 applied?`)
 if (!data.length) { console.log('No invitation events recorded yet.'); process.exit(0) }
 for (const row of data.reverse()) {
   const time = new Date(row.created_at).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'medium' })
