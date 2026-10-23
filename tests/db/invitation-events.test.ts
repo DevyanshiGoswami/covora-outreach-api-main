@@ -47,6 +47,9 @@ test('adding a user records each step, and a refused link records why', async t 
   assert.equal((await anonClient().auth.verifyOtp({ token_hash: second.body.loginToken.slice('resume_'.length), type: 'email' })).error?.code, 'otp_expired')
   assert.equal((await call(team.inspectInvitation, resumed, { token: first.body.token })).status, 403)
   assert.equal((await call(team.inspectInvitation, resumed, { token: second.body.token })).status, 200)
+  // Resuming signs them in; they still create their own password before joining.
+  assert.equal((await call(team.acceptInvitation, resumed, { token: second.body.token })).status, 409)
+  assert.ifError((await resumed.auth.updateUser({ password: `Resumed-${randomUUID()}` })).error)
   assert.equal((await call(team.acceptInvitation, resumed, { token: second.body.token })).status, 200)
   assert.equal((await call(onboarding.invite, tenant.supabase, { clientId: tenant.client.id, email, role: 'client_member' })).status, 400)
 
@@ -54,7 +57,8 @@ test('adding a user records each step, and a refused link records why', async t 
   const masked = `i***@example.test`
   assert.deepEqual(rows.map(r => [r.step, r.outcome, r.reason]), [
     ['create', 'ok', 'new_login'], ['inspect', 'failed', 'different_account'], ['create', 'ok', 'resumed_login'],
-    ['inspect', 'failed', 'replaced_or_revoked'], ['inspect', 'ok', 'ok'], ['accept', 'ok', 'ok'], ['create', 'failed', 'already_member']])
+    ['inspect', 'failed', 'replaced_or_revoked'], ['inspect', 'ok', 'ok'], ['accept', 'failed', 'password_required'], ['accept', 'ok', 'ok'],
+    ['create', 'failed', 'already_member']])
   assert.ok(rows.every(r => r.invitee === null || r.invitee === masked))
   assert.ok(!JSON.stringify(rows).includes(email) && !JSON.stringify(rows).includes(first.body.token))
   assert.equal(rows[0].actor_user_id, tenant.user.id); assert.equal(rows[1].actor_user_id, stranger.user.id)
@@ -89,6 +93,7 @@ test('a login that ever joined a workspace never gets a sign-in link from being 
   const invited = await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })
   const person = anonClient(), verified = await person.auth.verifyOtp({ token_hash: invited.body.loginToken, type: 'invite' }); assert.ifError(verified.error)
   t.after(async () => { await admin.auth.admin.deleteUser(verified.data.user!.id) })
+  assert.ifError((await person.auth.updateUser({ password: `Joined-${randomUUID()}` })).error)
   assert.equal((await call(team.acceptInvitation, person, { token: invited.body.token })).status, 200)
   const again = await call(onboarding.invite, second.supabase, { clientId: second.client.id, email, role: 'client_member' })
   assert.equal(again.status, 200); assert.equal(again.body.loginToken, null); assert.match(again.body.notice, /already has a login/)

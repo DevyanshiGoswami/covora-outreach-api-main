@@ -1,7 +1,7 @@
 import 'server-only'
 import { z } from 'zod'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
-import { createFailureReason, invitationActor, invitationLogClient, logInvitationEvent, logInvitationRefusal } from './invitation-log'
+import { createFailureReason, diagnoseInvitation, invitationActor, invitationLogClient, logInvitationEvent, logInvitationRefusal } from './invitation-log'
 
 const uuid = z.uuid()
 const role = z.enum(['client_admin', 'client_member', 'client_viewer', 'operator'])
@@ -24,7 +24,7 @@ const tokenSchema = z.strictObject({ token })
 const createdSchema = z.tuple([z.object({ invitation_id: uuid, token, expires_at: z.string() })])
 const inspectedSchema = z.tuple([z.object({
   invitation_id: uuid, client_id: uuid, client_name: z.string(), role,
-  expires_at: z.string(), status: z.enum(['pending', 'accepted']),
+  expires_at: z.string(), status: z.enum(['pending', 'accepted']), password_required: z.boolean(),
 })])
 const PAGE_SIZE = 500
 
@@ -125,12 +125,21 @@ export function createOutboundTeamHandlers(config?: OutboundApiConfig & { servic
       return json({ invitation: {
         id: invitation.invitation_id, clientId: invitation.client_id, clientName: invitation.client_name,
         role: invitation.role, expiresAt: invitation.expires_at, status: invitation.status,
+        passwordRequired: invitation.password_required,
       } })
     }),
     acceptInvitation: handle(async (request, client) => {
       const value = await input(request, tokenSchema)
       const result = await client.rpc('accept_outreach_invitation', { p_token: value.token })
       const log = invitationLogClient(config)
+      // An invited identity must choose its own password before access is granted.
+      if (result.error?.code === '22023' && result.error.message === 'Set a password first') {
+        const actor = log ? await invitationActor(request, client) : null
+        const why = log ? await diagnoseInvitation(log, value.token, actor) : null
+        await logInvitationEvent(log, { step: 'accept', outcome: 'failed', reason: 'password_required',
+          clientId: why?.clientId, invitationId: why?.invitationId, invitee: why?.invitee, actorUserId: actor })
+        return json({ error: 'Create your password before accepting this invitation.', passwordRequired: true }, 409)
+      }
       if (result.error) await logInvitationRefusal(log, 'accept', request, client, value.token, result.error)
       checkDatabaseError(result.error)
       const clientId = uuid.safeParse(result.data)

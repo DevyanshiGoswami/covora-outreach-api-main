@@ -197,15 +197,24 @@ test('member update rejects stale-input shapes, unsafe versions and unsupported 
 test('inspect normalizes safe invitation metadata and sends the secret only in the RPC body', async () => {
   const { handlers, calls } = harness(authed(rpc('inspect_outreach_invitation', [{
     invitation_id: INVITATION, client_id: CLIENT, client_name: 'Fixture workspace', role: 'client_member',
-    expires_at: invitation.expires_at, status: 'pending', email: 'future@example.test', token_hash: 'private', token: TOKEN,
+    expires_at: invitation.expires_at, status: 'pending', password_required: true, email: 'future@example.test', token_hash: 'private', token: TOKEN,
   }])))
   const response = await handlers.inspectInvitation(request('/invitations/inspect', 'POST', { token: TOKEN }))
   assert.equal(response.status, 200)
   assert.deepEqual(await response.json(), { invitation: { id: INVITATION, clientId: CLIENT, clientName: 'Fixture workspace',
-    role: 'client_member', expiresAt: invitation.expires_at, status: 'pending' } })
+    role: 'client_member', expiresAt: invitation.expires_at, status: 'pending', passwordRequired: true } })
   assert.deepEqual(JSON.parse(calls[1].body), { p_token: TOKEN })
   assert.equal(calls[1].method, 'POST')
   assert.ok(!calls[1].url.href.includes(TOKEN))
+})
+
+test('accept asks for a password only when the service refuses an invited identity without one', async () => {
+  const refused = harness(authed(rpc('accept_outreach_invitation', { code: '22023', message: 'Set a password first', details: null, hint: null }, 400)))
+  const response = await refused.handlers.acceptInvitation(request('/invitations/accept', 'POST', { token: TOKEN }))
+  assert.equal(response.status, 409)
+  assert.deepEqual(await response.json(), { error: 'Create your password before accepting this invitation.', passwordRequired: true })
+  const other = harness(authed(rpc('accept_outreach_invitation', { code: '22023', message: 'Invalid invitation', details: null, hint: null }, 400)))
+  await error(await other.handlers.acceptInvitation(request('/invitations/accept', 'POST', { token: TOKEN })), 400)
 })
 
 test('accept uses current verified identity and returns only the authorized workspace ID', async () => {
