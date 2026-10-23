@@ -98,3 +98,22 @@ test('a login that ever joined a workspace never gets a sign-in link from being 
   assert.deepEqual((await events(second.client.id)).map(r => r.reason), ['existing_login', 'existing_login'])
   for (const session of [first.supabase, anonClient()]) assert.equal((await session.rpc('resumable_outreach_login', { p_user: verified.data.user!.id })).error?.code, '42501')
 })
+
+test('a sign-in link is withheld while another workspace or an agency owner is also waiting for the person', async t => {
+  const first = await workspace(t), second = await workspace(t)
+  const email = `shared-${randomUUID()}@example.test`
+  const invited = await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })
+  const person = anonClient(), verified = await person.auth.verifyOtp({ token_hash: invited.body.loginToken, type: 'invite' }); assert.ifError(verified.error)
+  t.after(async () => { await admin.auth.admin.deleteUser(verified.data.user!.id) })
+  // Another workspace adds them while the first invitation is pending, and the first re-adds them after that.
+  const other = await call(onboarding.invite, second.supabase, { clientId: second.client.id, email, role: 'client_member' })
+  assert.equal(other.status, 200); assert.equal(other.body.loginToken, null)
+  assert.equal((await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })).body.loginToken, null)
+  // Once only one workspace is waiting, re-adding gives the link again.
+  assert.ifError((await admin.from('outreach_invitations').update({ status: 'revoked' }).eq('client_id', second.client.id).eq('email', email)).error)
+  assert.match((await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })).body.loginToken, /^resume_/)
+  // A pending agency-owner invitation for the same address also withholds it.
+  assert.ifError((await admin.from('outreach_owner_invitations').insert({ email, invited_by: first.user.id, inviter_version: 1, token_hash: randomUUID() })).error)
+  assert.equal((await call(onboarding.invite, first.supabase, { clientId: first.client.id, email, role: 'client_member' })).body.loginToken, null)
+  assert.deepEqual((await events(first.client.id)).map(r => r.reason), ['new_login', 'existing_login', 'resumed_login', 'existing_login'])
+})

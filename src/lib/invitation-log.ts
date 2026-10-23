@@ -47,7 +47,7 @@ export function invitationLogClient(config?: LogConfig): SupabaseClient<Database
     return createClient<Database>(runtime.url, runtime.serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       global: { fetch: async (input, init) => {
-        try { return await (config?.fetch ?? fetch)(input, { ...init, signal: AbortSignal.timeout(5000), cache: 'no-store', redirect: 'error' }) }
+        try { return await (config?.fetch ?? fetch)(input, { ...init, signal: AbortSignal.timeout(2000), cache: 'no-store', redirect: 'error' }) }
         catch { return Response.json({ message: 'Request unavailable' }, { status: 503 }) }
       } },
     })

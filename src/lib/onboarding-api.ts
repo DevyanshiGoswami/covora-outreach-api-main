@@ -180,7 +180,13 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       if (existing) {
         const target = await admin.from('outreach_invitations').select('target_user_id').eq('id', created.invitation_id).single()
         const resumable = target.data?.target_user_id ? await admin.rpc('resumable_outreach_login', { p_user: target.data.target_user_id }) : null
-        if (resumable?.data === true) {
+        // Never hand a sign-in for this login to one workspace while another workspace or an agency
+        // owner is also waiting for the same person: whoever holds the link would share that access.
+        const [otherWorkspaces, ownerInvites] = resumable?.data === true ? await Promise.all([
+          admin.from('outreach_invitations').select('id', { count: 'exact', head: true }).eq('email', value.email).eq('status', 'pending').neq('client_id', value.clientId),
+          admin.from('outreach_owner_invitations').select('id', { count: 'exact', head: true }).eq('email', value.email).neq('status', 'revoked'),
+        ]) : [null, null]
+        if (resumable?.data === true && otherWorkspaces && !otherWorkspaces.error && otherWorkspaces.count === 0 && ownerInvites && !ownerInvites.error && ownerInvites.count === 0) {
           const resume = await admin.auth.admin.generateLink({ type: 'magiclink', email: value.email })
           // The portal verifies a "resume_" token as a one-time sign-in instead of an invite.
           if (!resume.error && resume.data.properties?.hashed_token) loginToken = `resume_${resume.data.properties.hashed_token}`
