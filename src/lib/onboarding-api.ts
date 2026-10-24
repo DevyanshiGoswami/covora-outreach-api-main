@@ -8,6 +8,7 @@ import { requireRuntimeDatabase } from './runtime-config'
 import { channelSchema, peopleSchema, portalContextSchema } from './onboarding-contract'
 import { checkConnectionWorkspace, disconnectAccount, connectAccount, emailAuthorizationUrl, reviewEmailAccount, reviewLinkedinAttempt, type ConnectionResult } from './onboarding-provider'
 import { createProviderCallLogger } from './provider-call-log'
+import { createFailureReason, existingLoginDetail, invitationActor, invitationLogClient, logInvitationEvent } from './invitation-log'
 import { linkedinCookies, linkedinProfile } from './linkedin-session'
 
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
@@ -161,18 +162,48 @@ export function createOnboardingHandlers(config?: OnboardingApiConfig) {
       const value = await input(request, z.strictObject({ clientId: z.uuid(), email, role: z.enum(['client_admin', 'client_member', 'client_viewer', 'operator']).default('client_admin') }))
       // The invitation RPC independently checks the inviter and permitted target role.
       const invitation = await client.rpc('create_outreach_invitation', { p_client_id: value.clientId, p_email: value.email, p_role: value.role })
+      const log = invitationLogClient(config)
+      const actor = log ? await invitationActor(request, client) : null
+      if (invitation.error) await logInvitationEvent(log, { step: 'create', outcome: 'failed', reason: createFailureReason(invitation.error),
+        clientId: value.clientId, invitee: value.email, actorUserId: actor, detail: invitation.error.code ? `database code ${invitation.error.code}` : null })
       checkDatabaseError(invitation.error)
       const created = z.tuple([z.object({ invitation_id: z.uuid(), token: z.string().regex(/^[a-f0-9]{64}$/), expires_at: z.string() })]).parse(invitation.data)[0]
       // Only invite NEW Auth identities. Never return a magic/recovery link for an
       // existing user: that would let the inviting admin take over their account.
-      const link = await service(config).auth.admin.generateLink({ type: 'invite', email: value.email })
-      if (link.error && !['email_exists', 'user_already_exists'].includes(link.error.code ?? '')) {
+      // The one exception is a login this flow created whose person never finished
+      // joining anything (resumable_outreach_login): it gets a fresh one-time link,
+      // exactly as a brand-new person would, so re-adding them is not a dead end.
+      const admin = service(config)
+      const link = await admin.auth.admin.generateLink({ type: 'invite', email: value.email })
+      const existing = Boolean(link.error && ['email_exists', 'user_already_exists'].includes(link.error.code ?? ''))
+      let loginToken = link.error ? null : link.data.properties?.hashed_token ?? null
+      if (existing) {
+        const target = await admin.from('outreach_invitations').select('target_user_id').eq('id', created.invitation_id).single()
+        const resumable = target.data?.target_user_id ? await admin.rpc('resumable_outreach_login', { p_user: target.data.target_user_id }) : null
+        // Never hand a sign-in for this login to one workspace while another workspace or an agency
+        // owner is also waiting for the same person: whoever holds the link would share that access.
+        const [otherWorkspaces, ownerInvites] = resumable?.data === true ? await Promise.all([
+          admin.from('outreach_invitations').select('id', { count: 'exact', head: true }).eq('email', value.email).eq('status', 'pending').neq('client_id', value.clientId),
+          admin.from('outreach_owner_invitations').select('id', { count: 'exact', head: true }).eq('email', value.email).neq('status', 'revoked'),
+        ]) : [null, null]
+        if (resumable?.data === true && otherWorkspaces && !otherWorkspaces.error && otherWorkspaces.count === 0 && ownerInvites && !ownerInvites.error && ownerInvites.count === 0) {
+          const resume = await admin.auth.admin.generateLink({ type: 'magiclink', email: value.email })
+          // The portal verifies a "resume_" token as a one-time sign-in instead of an invite.
+          if (!resume.error && resume.data.properties?.hashed_token) loginToken = `resume_${resume.data.properties.hashed_token}`
+        }
+      }
+      await logInvitationEvent(log, { step: 'create', outcome: 'ok',
+        reason: !link.error ? 'new_login' : existing ? (loginToken ? 'resumed_login' : 'existing_login') : 'login_provisioning_failed',
+        clientId: value.clientId, invitationId: created.invitation_id, invitee: value.email, actorUserId: actor,
+        detail: existing && !loginToken ? await existingLoginDetail(log, created.invitation_id) : link.error && !existing ? `auth code ${link.error.code ?? 'unknown'}` : null })
+      if (link.error && !existing) {
         return json({ invitationId: created.invitation_id, token: created.token, expiresAt: created.expires_at,
           loginToken: null, notice: 'The team invitation is ready. Login provisioning was unavailable; existing users can sign in, or ask the administrator to reissue the invitation.' })
       }
-      return json({ invitationId: created.invitation_id, token: created.token, expiresAt: created.expires_at,
-        loginToken: link.data.properties?.hashed_token ?? null,
-        notice: link.error ? 'This person already has a login. They will sign in to accept the invitation.' : 'Share this private link only with the invited person. It allows them to set their password.' })
+      return json({ invitationId: created.invitation_id, token: created.token, expiresAt: created.expires_at, loginToken,
+        notice: !existing ? 'Share this private link only with the invited person. It allows them to set their password.'
+          : loginToken ? 'This person started setting up their login but never finished. Share this private link only with them; it lets them finish and set their password.'
+            : 'This person already has a login. They will sign in to accept the invitation.' })
     }),
     connection: handle(async (request, client) => {
       const value = await input(request, connectionInput)

@@ -1,6 +1,7 @@
 import 'server-only'
 import { z } from 'zod'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, readJson, type OutboundApiConfig } from './outbound-http'
+import { createFailureReason, invitationActor, invitationLogClient, logInvitationEvent, logInvitationRefusal } from './invitation-log'
 
 const uuid = z.uuid()
 const role = z.enum(['client_admin', 'client_member', 'client_viewer', 'operator'])
@@ -52,7 +53,7 @@ async function input<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   return parsed.data
 }
 
-export function createOutboundTeamHandlers(config?: OutboundApiConfig) {
+export function createOutboundTeamHandlers(config?: OutboundApiConfig & { serviceKey?: string }) {
   const handle = createOutboundHandler(config, {
     400: 'Invalid team request. Refresh and try again.',
     401: 'Sign in to continue.',
@@ -84,10 +85,15 @@ export function createOutboundTeamHandlers(config?: OutboundApiConfig) {
       const result = await client.rpc('create_outreach_invitation', {
         p_client_id: value.clientId, p_email: value.email, p_role: value.role,
       })
+      const log = invitationLogClient(config)
+      const actor = log ? await invitationActor(request, client) : null
+      if (result.error) await logInvitationEvent(log, { step: 'create', outcome: 'failed', reason: createFailureReason(result.error),
+        clientId: value.clientId, invitee: value.email, actorUserId: actor, detail: result.error.code ? `database code ${result.error.code}` : null })
       checkDatabaseError(result.error)
       const parsed = createdSchema.safeParse(result.data)
       if (!parsed.success) throw new ApiError(500)
       const created = parsed.data[0]
+      await logInvitationEvent(log, { step: 'create', outcome: 'ok', reason: 'created', clientId: value.clientId, invitationId: created.invitation_id, invitee: value.email, actorUserId: actor })
       return json({ invitationId: created.invitation_id, token: created.token, expiresAt: created.expires_at })
     }),
     revokeInvitation: handle(async (request, client) => {
@@ -108,10 +114,14 @@ export function createOutboundTeamHandlers(config?: OutboundApiConfig) {
     inspectInvitation: handle(async (request, client) => {
       const value = await input(request, tokenSchema)
       const result = await client.rpc('inspect_outreach_invitation', { p_token: value.token })
+      const log = invitationLogClient(config)
+      if (result.error) await logInvitationRefusal(log, 'inspect', request, client, value.token, result.error)
       checkDatabaseError(result.error)
       const parsed = inspectedSchema.safeParse(result.data)
       if (!parsed.success) throw new ApiError(500)
       const invitation = parsed.data[0]
+      await logInvitationEvent(log, { step: 'inspect', outcome: 'ok', reason: invitation.status === 'accepted' ? 'already_accepted' : 'ok',
+        clientId: invitation.client_id, invitationId: invitation.invitation_id, actorUserId: log ? await invitationActor(request, client) : null })
       return json({ invitation: {
         id: invitation.invitation_id, clientId: invitation.client_id, clientName: invitation.client_name,
         role: invitation.role, expiresAt: invitation.expires_at, status: invitation.status,
@@ -120,9 +130,12 @@ export function createOutboundTeamHandlers(config?: OutboundApiConfig) {
     acceptInvitation: handle(async (request, client) => {
       const value = await input(request, tokenSchema)
       const result = await client.rpc('accept_outreach_invitation', { p_token: value.token })
+      const log = invitationLogClient(config)
+      if (result.error) await logInvitationRefusal(log, 'accept', request, client, value.token, result.error)
       checkDatabaseError(result.error)
       const clientId = uuid.safeParse(result.data)
       if (!clientId.success) throw new ApiError(500)
+      await logInvitationEvent(log, { step: 'accept', outcome: 'ok', reason: 'ok', clientId: clientId.data, actorUserId: log ? await invitationActor(request, client) : null })
       return json({ clientId: clientId.data })
     }),
   }

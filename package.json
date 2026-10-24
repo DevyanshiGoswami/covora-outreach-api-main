@@ -20,6 +20,7 @@
     "test:tooling": "node --test tests/tooling/*.test.mjs",
     "test:env": "node scripts/write-test-env.mjs",
     "logs:providers": "node scripts/provider-calls.mjs",
+    "logs:invitations": "node scripts/invitation-events.mjs",
     "provider:probe": "NODE_OPTIONS=--conditions=react-server tsx scripts/provider-probe.ts"
   },
   "dependencies": {
