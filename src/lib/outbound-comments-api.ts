@@ -9,7 +9,8 @@ const timestamp = z.iso.datetime({ offset: true })
 const body = z.string().max(5000).trim().min(1)
 const title = z.string().max(120).trim().min(1)
 // Profiles allow 200 PostgreSQL characters, including two-unit astral characters.
-const authorName = z.string().min(1).max(400)
+// Zod 4.6+ counts characters like the database's length(author_name) <= 200.
+const authorName = z.string().min(1).max(200)
 const offset = z.string().regex(/^(0|[1-9]\d{0,5})$/).transform(Number).refine((n) => n <= 100000).default(0)
 const listQuery = z.strictObject({ clientId: uuid, status: z.enum(['all', 'open', 'in_progress', 'resolved']).default('all'), offset })
 const detailQuery = z.strictObject({ clientId: uuid, offset })
