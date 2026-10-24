@@ -1089,7 +1089,7 @@ isOneToOne: false
                            },
 "inspect_outreach_invitation":
 { Args: { "p_token": string }; Returns: {
-              "client_id": string,"client_name": string,"expires_at": string,"invitation_id": string,"role": string,"status": string
+              "client_id": string,"client_name": string,"expires_at": string,"invitation_id": string,"password_required": boolean,"role": string,"status": string
             }[]
                            },
 "inspect_outreach_owner_invitation":

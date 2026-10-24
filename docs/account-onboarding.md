@@ -167,3 +167,15 @@ The user link remains stable through login-email changes. Suspension, revocation
 Connection preparation, provider-context reads and completion independently check the linked identity, membership version, feature gate and workspace version. An unfinished assisted sign-in that predates linking is fenced and shown as needing review. Existing confirmed connections are preserved. No role change enables sending or revokes an existing provider session.
 
 Local verification: role/tenant database regressions cover reconciliation, idempotent acceptance, self-only connections, viewer/suspended denial, in-flight fencing, email changes, new-member Auth provisioning and denied role escalation. Existing simulated Google and LinkedIn flows also pass. Browser coverage includes owner visibility, mobile layout, private invitation activation/password setup, acceptance, member controls and client isolation.
+
+## Client invitation password setup (October 22, 2026)
+
+Migration 0135 requires invited identities to choose a password before accepting a client invitation. Auth gives an invited identity a random initial password, so the password hash cannot show whether the person chose one. The rule reuses the owner invitation password record from 0112. Its trigger records every real password change after confirmation, for any identity.
+
+- `inspect_outreach_invitation` returns `password_required`: a pending invitation, for an identity with `invited_at`, with no password record. `/api/outbound/invitations/inspect` exposes it as `passwordRequired`.
+- `accept_outreach_invitation` raises `Set a password first` for such an identity. `/api/outbound/invitations/accept` returns 409 `{ passwordRequired: true }` so the portal returns the person to password setup. The invitation event log records it as `password_required`.
+- Identities created with a password are unaffected, as are existing users who already set one through the portal. Invitations pending before 0135 are covered, because the check runs at acceptance.
+- This adds no sign-in path. A person who was activated, then lost their session before setting a password, can be added again: the resume link described above lets them sign in once. They still create a password before acceptance succeeds.
+- Identities that set a password before 0112 have no record. They are asked to create a password once if invited again.
+
+Tests: `tests/db/invitation-password.test.ts`, and the accept/inspect cases in `tests/unit/outbound-team-api.test.ts`.
