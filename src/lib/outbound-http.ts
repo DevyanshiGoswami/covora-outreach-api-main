@@ -1,9 +1,11 @@
 import 'server-only'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import type { Database } from '@/lib/database.types'
+import { resolveDeveloperSession, type DeveloperConfig } from './developer-session'
+import { authorizeDevelopmentRequest, scopeDevelopmentResponse } from './developer-scope'
 import { requireRuntimeDatabase } from './runtime-config'
 
-export type OutboundApiConfig = { url: string; anonKey: string; fetch: typeof fetch; timeoutMs?: number }
+export type OutboundApiConfig = { url: string; anonKey: string; fetch: typeof fetch; timeoutMs?: number; development?: DeveloperConfig }
 type ErrorStatus = 400 | 401 | 403 | 500
 const MAX_BODY_BYTES = 8192
 export class ApiError extends Error {
@@ -42,7 +44,9 @@ export async function readJson(request: Request, maxBytes = MAX_BODY_BYTES): Pro
       if (done) break
       size += value.byteLength
       if (size > maxBytes) {
-        await reader.cancel()
+        // A cloned request uses a tee; waiting for cancel can deadlock until
+        // the untouched branch is consumed. Cancellation must not delay refusal.
+        void reader.cancel().catch(() => {})
         throw new ApiError(400)
       }
       body += decoder.decode(value, { stream: true })
@@ -94,6 +98,16 @@ export function createOutboundHandler(config: OutboundApiConfig | undefined, mes
   return function handle(operation: (request: Request, client: SupabaseClient<Database>) => Promise<Response>) {
     return async (request: Request): Promise<Response> => {
       try {
+        const token = request.headers.get('authorization')?.match(/^Bearer[\t ]+([^\s,]+)[\t ]*$/i)?.[1]
+        if (token?.startsWith('cdev_')) {
+          const scope = await resolveDeveloperSession(token, config)
+          await authorizeDevelopmentRequest(request, scope, config)
+          const headers = new Headers(request.headers)
+          headers.set('authorization', `Bearer ${scope.bearer}`)
+          const delegated = new Request(request, { headers })
+          const response = await operation(delegated, await authenticate(delegated))
+          return await scopeDevelopmentResponse(delegated, response, scope)
+        }
         return await operation(request, await authenticate(request))
       } catch (error) {
         const status = error instanceof ApiError ? error.status : 500

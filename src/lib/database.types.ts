@@ -402,6 +402,25 @@ isOneToOne: false
       referencedColumns: ["id","client_id","channel"]
     }
                   ]
+                },"outreach_developer_sessions": {
+                  Row: {
+                    "client_id": string,"created_at": string,"expires_at": string,"owner_version": number,"secret_id": string,"token_hash": string,"user_id": string
+                  }
+                  Insert: {
+                    "client_id": string,"created_at"?: string,"expires_at": string,"owner_version": number,"secret_id": string,"token_hash": string,"user_id": string
+                  }
+                  Update: {
+                    "client_id"?: string,"created_at"?: string,"expires_at"?: string,"owner_version"?: number,"secret_id"?: string,"token_hash"?: string,"user_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_developer_sessions_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_fetch_queue": {
                   Row: {
                     "attempt_count": number,"available_at": string,"campaign_id": string,"client_id": string,"completed_at": string | null,"cursor": string | null,"id": string,"last_error": string | null,"lead_email": string,"provider_thread_id": string,"requested_at": string
@@ -1095,6 +1114,9 @@ isOneToOne: false
 "inspect_outreach_owner_invitation":
 { Args: { "p_token": string }; Returns: Json
                            },
+"issue_outreach_developer_session":
+{ Args: { "p_bearer": string,"p_client": string,"p_expires": string,"p_hash": string,"p_user": string }; Returns: string
+                           },
 "list_outreach_comments":
 { Args: { "p_client": string,"p_offset"?: number,"p_status"?: string }; Returns: Json
                            },
@@ -1177,6 +1199,9 @@ isOneToOne: false
 "read_outreach_conversation":
 { Args: { "p_before_at"?: string,"p_before_id"?: string,"p_client_id": string,"p_conversation_id": string,"p_limit"?: number }; Returns: Json
                            },
+"read_outreach_developer_session":
+{ Args: { "p_client": string,"p_hash": string }; Returns: Json
+                           },
 "read_outreach_disconnect":
 { Args: { "p_id": string,"p_lease": string }; Returns: Json
                            },
@@ -1221,6 +1246,9 @@ isOneToOne: false
                            },
 "resumable_outreach_login":
 { Args: { "p_user": string }; Returns: boolean
+                           },
+"revoke_outreach_developer_session":
+{ Args: { "p_hash": string }; Returns: undefined
                            },
 "revoke_outreach_invitation":
 { Args: { "p_invitation_id": string }; Returns: undefined
