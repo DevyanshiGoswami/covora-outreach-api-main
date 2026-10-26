@@ -14,7 +14,9 @@ export function scopedDataQuery(url: URL, clientId: string) {
  query.delete('resource')
  const seen = new Set<string>()
  for (const [key,value] of query) {
-   if (seen.has(key) || !/^[a-z_]+$/.test(key)) throw new ApiError(403)
+   // Flat filters may repeat: date windows use both day.gte and day.lte.
+   // PostgREST combines these with AND. Keep controls and tenant scope unique.
+   if (!/^[a-z_]+$/.test(key) || (seen.has(key) && ['select','order','limit','offset','client_id'].includes(key))) throw new ApiError(403)
    seen.add(key)
    if (key === 'select') { if (!/^[a-z_]+(?:,[a-z_]+)*$/.test(value)) throw new ApiError(403) }
    else if (key === 'order') { if (!/^[a-z_]+(?:\.(?:asc|desc|nullsfirst|nullslast))*(?:,[a-z_]+(?:\.(?:asc|desc|nullsfirst|nullslast))*)*$/.test(value)) throw new ApiError(403) }

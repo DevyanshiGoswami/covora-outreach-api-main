@@ -79,3 +79,17 @@ Unit tests cover query injection and default denial of new routes. Full existing
 API and tenant/role suites must pass. All test identities and data use a new
 isolated local stack; no production migration, login provisioning or real sending
 is part of these tests.
+
+### Date-range regression (October 26, 2026)
+
+- Symptom: an owner could sign in and see the Covora directory, but opening the
+  overview failed with a neutral results error.
+- Root cause: the gateway rejected duplicate query keys, including the SDK's
+  legitimate `day=gte...&day=lte...` date window.
+- Fix: preserve repeated flat filters, each independently validated. Query
+  controls and `client_id` must still be unique; the gateway always injects the
+  fixed Covora client scope. No logical expressions or embedded reads are added.
+- Rule: test the portal SDK's complete overview query, including date windows,
+  as well as successful login and directory loading.
+- Evidence: SDK regression and real database gateway tests cover both date
+  bounds; duplicate scope/control and query-injection cases remain denied.

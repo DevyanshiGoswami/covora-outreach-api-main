@@ -35,6 +35,8 @@ test('central owner sign-in delegates only Covora; other clients, global adminis
  const context=await restricted.json();assert.deepEqual(context.workspaces.map((row:{id:string})=>row.id),[a.client.id]);assert.equal(context.isOwner,true);assert.equal(context.canManageClients,false)
  const directory=await data(request('/api/development/data?resource=client_outreach_workspaces&select=client_id,client_name,role,presentation_mode',token))
  assert.equal(directory.status,200);assert.deepEqual((await directory.json()).map((row:{client_id:string})=>row.client_id),[a.client.id])
+ const daily=await data(request('/api/development/data?resource=client_outreach_campaign_daily&select=campaign_id,day,sent&day=lte.2026-10-26&day=gte.2026-09-27&order=day.desc,campaign_id.asc&offset=0&limit=500',token))
+ assert.equal(daily.status,200);assert.deepEqual(await daily.json(),[])
  for(const suffix of [`&client_id=eq.${b.client.id}`,'&select=client_id,clients(*)','&or=(client_id.neq.x)']) {
   assert.equal((await data(request('/api/development/data?resource=client_outreach_workspaces&select=client_id'+suffix,token))).status,403)
  }
