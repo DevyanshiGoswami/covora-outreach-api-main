@@ -1,6 +1,7 @@
 import 'server-only'
 import { z } from 'zod'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, type OutboundApiConfig } from './outbound-http'
+import { campaignPlanSchema } from './outbound-campaign-plans-api'
 
 const uuid = z.uuid()
 const nonnegative = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
@@ -9,6 +10,7 @@ const querySchema = z.strictObject({
   role: z.enum(['all', 'owners-executives', 'vp-director', 'manager-other']).default('all'),
   company: z.string().trim().max(500).default(''), campaign: z.union([uuid, z.literal('')]).default(''),
   list: z.union([uuid, z.literal('')]).default(''),
+  planId: uuid.optional(),
   audience: z.enum(['all', 'hiring_partners', 'athletes']).default('all'),
   state: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
   city: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
@@ -54,6 +56,7 @@ const pageSchema = z.object({
   filterOptionsTruncated: z.boolean(),
   audienceEnabled: z.boolean(),
   locationOptions: z.object({ states: z.array(locationOption).max(1001), cities: z.array(locationOption).max(5001) }),
+  selectedPlan: campaignPlanSchema.nullable().optional(),
 })
 export type OutboundLeadDirectory = z.infer<typeof pageSchema>
 
@@ -74,6 +77,7 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       p_client_id: value.clientId, p_q: value.q, p_role: value.role, p_company: value.company,
       ...(value.campaign ? { p_campaign: value.campaign } : {}),
       ...(value.list ? { p_list: value.list } : {}),
+      ...(value.planId ? { p_plan: value.planId } : {}),
       p_audience: value.audience, p_state: value.state, p_city: value.city,
       p_email: value.email, p_linkedin: value.linkedin, p_status: value.status, p_sort: value.sort, p_page: value.page,
     })
@@ -81,6 +85,12 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
     const projected = pageSchema.safeParse(result.data)
     if (!projected.success) throw new ApiError(500)
     const page = projected.data
+    if ((value.planId && page.selectedPlan?.id !== value.planId)
+      || (!value.planId && page.selectedPlan != null)
+      || (page.selectedPlan && (page.summary.total !== page.selectedPlan.leadCount
+        || page.leads.some(lead => lead.audience !== page.selectedPlan!.audience
+          || (page.selectedPlan!.channel === 'linkedin' && (!lead.linkedinUrl || lead.linkedinVerified !== true))
+          || (page.selectedPlan!.channel === 'email' && (!lead.email || lead.emailVerification !== 'verified' || lead.emailValidation !== 'valid')))))) throw new ApiError(500)
     if (page.clientId !== value.clientId || page.leads.some(lead => lead.clientId !== value.clientId
       || (value.campaign !== '' && lead.campaignId !== value.campaign)
       || (value.list !== '' && lead.listId !== value.list)

@@ -157,6 +157,50 @@ isOneToOne: false
       referencedColumns: ["id","client_id"]
     }
                   ]
+                },"outreach_campaign_plan_memberships": {
+                  Row: {
+                    "client_id": string,"created_at": string,"lead_id": string,"plan_id": string
+                  }
+                  Insert: {
+                    "client_id": string,"created_at"?: string,"lead_id": string,"plan_id": string
+                  }
+                  Update: {
+                    "client_id"?: string,"created_at"?: string,"lead_id"?: string,"plan_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_campaign_plan_memberships_lead_id_client_id_fkey"
+      columns: ["lead_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_imported_leads"
+      referencedColumns: ["id","client_id"]
+    },{
+      foreignKeyName: "outreach_campaign_plan_memberships_plan_id_client_id_fkey"
+      columns: ["plan_id","client_id"]
+isOneToOne: false
+      referencedRelation: "outreach_campaign_plans"
+      referencedColumns: ["id","client_id"]
+    }
+                  ]
+                },"outreach_campaign_plans": {
+                  Row: {
+                    "audience": string,"channel": string,"client_id": string,"created_at": string,"id": string,"name": string,"slug": string,"status": string,"updated_at": string
+                  }
+                  Insert: {
+                    "audience": string,"channel": string,"client_id": string,"created_at"?: string,"id"?: string,"name": string,"slug": string,"status"?: string,"updated_at"?: string
+                  }
+                  Update: {
+                    "audience"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"id"?: string,"name"?: string,"slug"?: string,"status"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_campaign_plans_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_campaign_steps": {
                   Row: {
                     "body_text": string,"campaign_id": string,"client_id": string,"delay_days": number,"stats": NonNullable<Json>,"step": number,"subject": string,"variant": number
@@ -1183,6 +1227,9 @@ isOneToOne: false
 "issue_outreach_developer_session":
 { Args: { "p_bearer": string,"p_client": string,"p_expires": string,"p_hash": string,"p_user": string }; Returns: string
                            },
+"list_outreach_campaign_plans":
+{ Args: { "p_client_id": string }; Returns: Json
+                           },
 "list_outreach_comments":
 { Args: { "p_client": string,"p_offset"?: number,"p_status"?: string }; Returns: Json
                            },
@@ -1196,7 +1243,7 @@ isOneToOne: false
 { Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
                            },
 "list_outreach_leads_v2":
-{ Args: { "p_audience"?: string,"p_campaign"?: string,"p_city"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_state"?: string,"p_status"?: string }; Returns: Json
+{ Args: { "p_audience"?: string,"p_campaign"?: string,"p_city"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_plan"?: string,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_state"?: string,"p_status"?: string }; Returns: Json
                            },
 "list_outreach_owners":
 { Args: Record<PropertyKey, never>; Returns: Json

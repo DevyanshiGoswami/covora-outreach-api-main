@@ -7,6 +7,7 @@ const rules: Record<string, string[]> = {
  '/api/outbound/accounts': ['GET','POST'], '/api/outbound/accounts/verify': ['POST'],
  '/api/outbound/conversations': ['GET'], '/api/outbound/leads': ['GET'], '/api/outbound/leads/escrow': ['GET'],
  '/api/outbound/clickup': ['GET'],
+ '/api/outbound/campaign-plans': ['GET'],
  '/api/outbound/setup': ['GET','POST','PATCH'], '/api/outbound/team': ['GET'],
  '/api/outbound/team/invitations': ['POST','DELETE'], '/api/outbound/team/members': ['PATCH'],
  '/api/outbound/comments': ['GET','POST'], '/api/onboarding/people': ['GET','POST'],

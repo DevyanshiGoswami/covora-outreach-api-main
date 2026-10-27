@@ -48,9 +48,12 @@ test('the portal SDK date window preserves both daily bounds and forced client s
 test('API allowlist binds both reads and writes and denies future or global endpoints', async () => {
  const req=(path:string,method='GET',body?:unknown)=>new Request('https://gateway.example.test'+path,{method,headers:{'Content-Type':'application/json'},...(body ? {body:JSON.stringify(body)} : {})})
  await authorizeDevelopmentRequest(req(`/api/outbound/accounts?clientId=${id}`),scope)
+ await authorizeDevelopmentRequest(req(`/api/outbound/campaign-plans?clientId=${id}`),scope)
  await authorizeDevelopmentRequest(req('/api/outbound/conversations/'+other+'/reply','POST',{clientId:id}),scope)
  for(const request of [
   req(`/api/outbound/accounts?clientId=${other}`),req(`/api/outbound/accounts?clientId=${id}&clientId=${other}`),
+  req(`/api/outbound/campaign-plans?clientId=${other}`),req(`/api/outbound/campaign-plans?clientId=${id}&clientId=${other}`),
+  req('/api/outbound/campaign-plans','POST',{clientId:id}),
   req('/api/outbound/accounts','POST',{clientId:other}), req('/api/outbound/accounts','DELETE',{clientId:id}),
   req('/api/outbound/future?clientId='+id),req('/api/onboarding/admin-integrations'),req('/api/outbound/owners'),
   req('/api/onboarding/clickup-app'),req('/api/onboarding/clickup-app','POST',{action:'save'}),
