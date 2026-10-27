@@ -4,6 +4,7 @@ import { ApiError, checkDatabaseError, createOutboundHandler, json, type Outboun
 import { campaignPlanSchema } from './outbound-campaign-plans-api'
 
 const EPM_CLIENT_ID = '26a2cffb-47f4-4231-9195-b4f772751c6d'
+const athleteTag = z.enum(['currently_in_sales', 'current_student_athlete', 'former_athlete', 'career_transition'])
 const uuid = z.uuid()
 const nonnegative = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const querySchema = z.strictObject({
@@ -13,6 +14,7 @@ const querySchema = z.strictObject({
   list: z.union([uuid, z.literal('')]).default(''),
   planId: uuid.optional(),
   audience: z.enum(['all', 'hiring_partners', 'athletes']).default('all'),
+  athleteStatus: z.enum(['all', ...athleteTag.options, 'unassigned']).default('all'),
   tier: z.enum(['all', '1', '2', '3', 'unassigned']).default('all'),
   state: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
   city: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
@@ -35,6 +37,14 @@ const tierEvidenceSchema = z.object({
     title: z.string().max(300), fact: z.string().max(800),
   })).max(10),
 })
+const athleteSourceSchema = tierEvidenceSchema.shape.sources.element.extend({ checkedAt: z.iso.datetime({ offset: true }) })
+const athleteSegmentsSchema = z.object({
+  tags: z.array(athleteTag).max(4), rationale: z.string().max(2000), gaps: z.array(z.string().max(500)).max(12),
+  reviewedAt: z.iso.datetime({ offset: true }).nullable(), sources: z.array(athleteSourceSchema).max(10),
+  tagEvidence: z.array(z.object({ tag: athleteTag, rationale: z.string().min(1).max(2000), sources: z.array(athleteSourceSchema).min(1).max(10) })).max(4),
+}).refine(value => new Set(value.tags).size === value.tags.length && value.tagEvidence.length === value.tags.length
+  && new Set(value.tagEvidence.map(entry => entry.tag)).size === value.tagEvidence.length
+  && value.tagEvidence.every(entry => value.tags.includes(entry.tag)))
 export const leadSchema = z.object({
   id: uuid, clientId: uuid, campaignId: uuid.nullable(), campaignName: z.string().max(500).nullable(),
   listId: uuid.nullable(), listName: z.string().max(500).nullable(),
@@ -53,6 +63,7 @@ export const leadSchema = z.object({
   audience: z.enum(['hiring_partners', 'athletes']).nullable().optional(),
   hiringTier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable().optional(),
   hiringTierEvidence: tierEvidenceSchema.optional(),
+  athleteSegments: athleteSegmentsSchema.optional(),
   personLocation: locationSchema.nullable().optional(),
   icebreaker: z.string().max(2000).regex(/^[^\x00-\x1f\x7f?‐‑‒–—―-]+$/).nullable().optional(),
   researchedAt: z.iso.datetime({ offset: true }).nullable().optional(),
@@ -67,6 +78,7 @@ const pageSchema = z.object({
   filterOptionsTruncated: z.boolean(),
   audienceEnabled: z.boolean(),
   tierEnabled: z.boolean(),
+  athleteSegmentsEnabled: z.boolean(),
   locationOptions: z.object({ states: z.array(locationOption).max(1001), cities: z.array(locationOption).max(5001) }),
   selectedPlan: campaignPlanSchema.nullable().optional(),
 })
@@ -90,7 +102,7 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       ...(value.campaign ? { p_campaign: value.campaign } : {}),
       ...(value.list ? { p_list: value.list } : {}),
       ...(value.planId ? { p_plan: value.planId } : {}),
-      p_audience: value.audience, p_state: value.state, p_city: value.city, p_tier: value.tier,
+      p_audience: value.audience, p_state: value.state, p_city: value.city, p_tier: value.tier, p_athlete_status: value.athleteStatus,
       p_email: value.email, p_linkedin: value.linkedin, p_status: value.status, p_sort: value.sort, p_page: value.page,
     })
     checkDatabaseError(result.error)
@@ -104,6 +116,7 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
           || (page.selectedPlan!.channel === 'linkedin' && (!lead.linkedinUrl || lead.linkedinVerified !== true))
           || (page.selectedPlan!.channel === 'email' && (!lead.email || lead.emailVerification !== 'verified' || lead.emailValidation !== 'valid')))))) throw new ApiError(500)
     if (page.tierEnabled !== (value.clientId === EPM_CLIENT_ID)
+      || page.athleteSegmentsEnabled !== (value.clientId === EPM_CLIENT_ID)
       || page.clientId !== value.clientId || page.leads.some(lead => lead.clientId !== value.clientId
       || (value.campaign !== '' && lead.campaignId !== value.campaign)
       || (value.list !== '' && lead.listId !== value.list)
@@ -113,6 +126,10 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       || (lead.linkedinVerified === true && !lead.linkedinUrl)
       || (value.audience !== 'all' && lead.audience !== value.audience)
       || ((lead.hiringTier !== undefined || lead.hiringTierEvidence !== undefined) && (!page.tierEnabled || lead.audience !== 'hiring_partners'))
+      || (lead.athleteSegments !== undefined && (!page.athleteSegmentsEnabled || lead.audience !== 'athletes'))
+      || (page.athleteSegmentsEnabled && lead.audience === 'athletes' && !lead.athleteSegments)
+      || (value.athleteStatus !== 'all' && (!page.athleteSegmentsEnabled || lead.audience !== 'athletes' || !lead.athleteSegments
+        || (value.athleteStatus === 'unassigned' ? lead.athleteSegments.tags.length !== 0 : !lead.athleteSegments.tags.includes(value.athleteStatus))))
       || (value.tier !== 'all' && (!page.tierEnabled || lead.audience !== 'hiring_partners'
         || (value.tier === 'unassigned' ? lead.hiringTier !== null : lead.hiringTier !== Number(value.tier))))
       || (value.state !== '' && (!lead.personLocation?.state || `${lead.personLocation.country}|${lead.personLocation.state}` !== value.state))
