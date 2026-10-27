@@ -182,6 +182,25 @@ isOneToOne: false
       referencedColumns: ["id","client_id"]
     }
                   ]
+                },"outreach_campaign_plan_sequences": {
+                  Row: {
+                    "audience_label": string,"channel": string,"client_id": string,"created_at": string,"label": string,"plan_id": string,"review_note": string | null,"sender_label": string | null,"sort_order": number,"source_filename": string,"source_sha256": string,"source_version": string,"steps": NonNullable<Json>,"updated_at": string,"variant_key": string
+                  }
+                  Insert: {
+                    "audience_label": string,"channel": string,"client_id": string,"created_at"?: string,"label": string,"plan_id": string,"review_note"?: string | null,"sender_label"?: string | null,"sort_order": number,"source_filename": string,"source_sha256": string,"source_version": string,"steps": NonNullable<Json>,"updated_at"?: string,"variant_key": string
+                  }
+                  Update: {
+                    "audience_label"?: string,"channel"?: string,"client_id"?: string,"created_at"?: string,"label"?: string,"plan_id"?: string,"review_note"?: string | null,"sender_label"?: string | null,"sort_order"?: number,"source_filename"?: string,"source_sha256"?: string,"source_version"?: string,"steps"?: NonNullable<Json>,"updated_at"?: string,"variant_key"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_campaign_plan_sequences_plan_id_client_id_channel_fkey"
+      columns: ["plan_id","client_id","channel"]
+isOneToOne: false
+      referencedRelation: "outreach_campaign_plans"
+      referencedColumns: ["id","client_id","channel"]
+    }
+                  ]
                 },"outreach_campaign_plans": {
                   Row: {
                     "audience": string,"channel": string,"client_id": string,"created_at": string,"id": string,"name": string,"slug": string,"status": string,"updated_at": string

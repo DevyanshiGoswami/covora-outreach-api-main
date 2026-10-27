@@ -8,9 +8,34 @@ export const campaignPlanSchema = z.object({
   status: z.literal('draft'), leadCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   createdAt: z.iso.datetime({ offset: true }), updatedAt: z.iso.datetime({ offset: true }),
 }).refine(plan => plan.audience !== 'athletes' || plan.channel === 'linkedin')
-export type OutboundCampaignPlan = z.infer<typeof campaignPlanSchema>
+const displayText = (maximum: number) => z.string().min(1).max(maximum)
+  .refine(value => value.trim().length > 0 && !/[\u0000-\u001f\u007f]/u.test(value))
+export const campaignSequenceStepSchema = z.object({
+  position: z.number().int().min(1).max(20),
+  dayOffset: z.number().int().min(0).max(365).nullable(),
+  subject: displayText(500).nullable(),
+  body: z.string().min(1).max(10000).refine(value => value.trim().length > 0 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)),
+  sameThread: z.boolean(), stage: z.enum(['email', 'after_connection']),
+})
+export const campaignSequenceVariantSchema = z.object({
+  key: z.string().min(1).max(80).regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/),
+  label: displayText(200), audienceLabel: displayText(500),
+  senderLabel: displayText(200).nullable(), reviewNote: displayText(2000).nullable(),
+  steps: z.array(campaignSequenceStepSchema).min(1).max(20),
+}).refine(variant => variant.steps.every((step, index) => step.position === index + 1))
+export const campaignPlanWithSequencesSchema = campaignPlanSchema.safeExtend({
+  sequenceVariants: z.array(campaignSequenceVariantSchema).max(20),
+}).refine(plan => new Set(plan.sequenceVariants.map(variant => variant.key)).size === plan.sequenceVariants.length)
+  .refine(plan => plan.sequenceVariants.every(variant => variant.steps.every((step, index) => {
+    if (plan.channel === 'linkedin') return step.stage === 'after_connection' && step.subject === null && !step.sameThread
+    return step.stage === 'email' && step.dayOffset !== null
+      && (index !== 0 || step.dayOffset === 0 && !step.sameThread)
+      && (index === 0 || step.dayOffset >= variant.steps[index - 1].dayOffset!)
+      && (step.sameThread ? step.subject === null : step.subject !== null)
+  })))
+export type OutboundCampaignPlan = z.infer<typeof campaignPlanWithSequencesSchema>
 const querySchema = z.strictObject({ clientId: z.uuid() })
-const responseSchema = z.object({ campaigns: z.array(campaignPlanSchema).max(1000) })
+const responseSchema = z.object({ campaigns: z.array(campaignPlanWithSequencesSchema).max(1000) })
 
 /** Native review plans only. There is deliberately no mutation or launch handler. */
 export function createOutboundCampaignPlanHandlers(config?: OutboundApiConfig) {

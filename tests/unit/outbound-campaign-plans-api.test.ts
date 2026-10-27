@@ -5,7 +5,7 @@ import { createOutboundLeadHandlers } from '../../src/lib/outbound-leads-api.ts'
 
 const clientId = 'c5ddfa59-1551-4688-a381-10d94107140f'
 const id = '9d375705-20e1-4c5e-a0af-be175888827f'
-const plan = { id, name: 'Manufacturer LinkedIn', audience: 'hiring_partners', channel: 'linkedin', status: 'draft', leadCount: 0, createdAt: '2026-10-26T00:00:00Z', updatedAt: '2026-10-26T00:00:00Z' }
+const plan = { id, name: 'Manufacturer LinkedIn', audience: 'hiring_partners', channel: 'linkedin', status: 'draft', leadCount: 0, sequenceVariants: [], createdAt: '2026-10-26T00:00:00Z', updatedAt: '2026-10-26T00:00:00Z' }
 const user = { id: clientId, aud: 'authenticated', role: 'authenticated', app_metadata: {}, user_metadata: {}, identities: [], created_at: plan.createdAt }
 function harness(result: unknown = { campaigns: [plan] }, status = 200) {
   const calls: { path: string; body: unknown; auth: string | null }[] = []
@@ -57,4 +57,45 @@ test('plan filter binds to the directory and rejects inconsistent selected plan 
   }
   assert.equal((await harness(page).leads.GET(request())).status, 500)
   assert.equal((await harness().leads.GET(request(`clientId=${clientId}&planId=invalid`))).status, 400)
+})
+
+const linkedinVariant = {
+  key: 'tier_1', label: 'Tier 1', audienceLabel: 'Independent distributors', senderLabel: null,
+  reviewNote: 'Source copy retained for review.', steps: [{ position: 1, dayOffset: null, subject: null,
+    body: 'Hey {{first name}},\n\nGreat to connect. <This stays plain text>', sameThread: false, stage: 'after_connection' }],
+}
+test('sequence DTO preserves exact review text and exposes no provenance or assignments', async () => {
+  const h = harness({ campaigns: [{ ...plan, sequenceVariants: [{ ...linkedinVariant, source_sha256: 'private', sender_id: 'private' }] }] })
+  const response = await h.plans.GET(request())
+  assert.equal(response.status, 200)
+  assert.deepEqual((await response.json()).campaigns[0].sequenceVariants, [linkedinVariant])
+  assert.deepEqual(Object.keys(h.plans), ['GET'])
+})
+test('sequence response rejects malformed, duplicate, unordered and wrong channel content', async () => {
+  const badVariants = [
+    null, [linkedinVariant, linkedinVariant],
+    [{ ...linkedinVariant, key: 'bad key' }], [{ ...linkedinVariant, label: '   ' }],
+    [{ ...linkedinVariant, steps: [] }], [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], position: 2 }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], dayOffset: 366 }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], body: 'x'.repeat(10001) }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], body: 'bad\u0000text' }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], sameThread: true }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], subject: 'Not LinkedIn' }] }],
+    [{ ...linkedinVariant, steps: [{ ...linkedinVariant.steps[0], stage: 'email' }] }],
+  ]
+  for (const sequenceVariants of badVariants) {
+    const response = await harness({ campaigns: [{ ...plan, sequenceVariants }] }).plans.GET(request())
+    assert.equal(response.status, 500)
+    assert.doesNotMatch(await response.text(), /Great to connect|private/)
+  }
+})
+test('email sequence requires initial subject and chronological days with explicit thread behavior', async () => {
+  const step = { position: 1, dayOffset: 0, subject: '{{firstName}}, hello', body: 'Hello {{firstName}}', sameThread: false, stage: 'email' }
+  const follow = { ...step, position: 2, dayOffset: 3, subject: null, sameThread: true }
+  const variant = { ...linkedinVariant, steps: [step, follow] }
+  assert.equal((await harness({ campaigns: [{ ...plan, channel: 'email', sequenceVariants: [variant] }] }).plans.GET(request())).status, 200)
+  for (const steps of [[{ ...step, dayOffset: null }], [{ ...step, dayOffset: 1 }], [{ ...step, subject: null }],
+    [{ ...step, sameThread: true }], [step, { ...follow, subject: 'New subject' }], [step, follow, { ...follow, position: 3, dayOffset: 1 }]]) {
+    assert.equal((await harness({ campaigns: [{ ...plan, channel: 'email', sequenceVariants: [{ ...variant, steps }] }] }).plans.GET(request())).status, 500)
+  }
 })
