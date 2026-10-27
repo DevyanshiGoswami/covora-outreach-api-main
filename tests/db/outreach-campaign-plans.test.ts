@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { test, type TestContext } from 'node:test'
 import type { Database, Json } from '../../src/lib/database.types.ts'
 import { createOutboundCampaignPlanHandlers, type OutboundCampaignPlan } from '../../src/lib/outbound-campaign-plans-api.ts'
@@ -8,6 +9,7 @@ import { adminClient, anonClient } from '../helpers/admin.ts'
 import { loadTestEnv } from '../helpers/env.ts'
 import { createAdmin, createTenant } from '../helpers/tenants.ts'
 import { grantOutreachMembership, grantOutreachOwner } from '../helpers/outreach.ts'
+import { testDatabaseContainer } from '../helpers/stack.ts'
 
 const admin = adminClient()
 type Lead = Database['public']['Tables']['outreach_imported_leads']['Insert']
@@ -141,6 +143,27 @@ test('plan membership and personal location filtering precede pagination without
   assert.equal(new Set(page.leads.map(row => row.id)).size, 4)
   assert.deepEqual(page.locationOptions.states.map(option => option.count).sort((a, b) => a - b), [4, 76])
   assert.equal((await f.directory(f.plans[1].id)).summary.total, 80)
+})
+
+test('large draft rosters remain bounded with a repeatedly reused generic database plan', async t => {
+  const f = await fixture(t)
+  await f.insert(Array.from({ length: 1400 }, (_, i) => ({ first_name: `Person ${String(i).padStart(4, '0')}`, review_evidence: { audience: 'hiring_partners', emailValidation: 'valid', researchGaps: 'Current hiring authority still needs confirmation. '.repeat(40) } })), [f.plans[0].id])
+  // A single connection exercises the cached generic plan, unlike separate HTTP
+  // fixtures. The timeout bounds repeated generic execution at realistic cohort size.
+  const sql = `begin;
+    set local statement_timeout='5s';
+    set local plan_cache_mode=force_generic_plan;
+    set local role authenticated;
+    set local "request.jwt.claim.sub"='${f.tenant.user.id}';
+    do $$declare page jsonb; begin
+      for i in 1..6 loop
+        page:=public.list_outreach_leads_v2(p_client_id:='${f.tenant.client.id}',p_plan:='${f.plans[0].id}',p_page:=i);
+        if (page->>'total')::integer<>1400 or (page->'selectedPlan'->>'leadCount')::integer<>1400
+          or jsonb_array_length(page->'leads')<>36 then raise exception 'Invalid large plan page'; end if;
+      end loop;
+    end$$;
+    rollback;`
+  assert.doesNotThrow(() => execFileSync('docker', ['exec', '-i', testDatabaseContainer, 'psql', '-U', 'postgres', '-d', 'postgres', '-X', '-q', '-v', 'ON_ERROR_STOP=1'], { input: sql, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }))
 })
 
 test('tenant composite keys and raw grants prevent cross tenant membership and client writes', async t => {
