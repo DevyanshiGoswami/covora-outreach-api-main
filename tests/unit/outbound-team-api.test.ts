@@ -11,7 +11,7 @@ const JWT = 'fixture-user-jwt'
 const user = { id: USER, aud: 'authenticated', role: 'authenticated', email: 'member@example.test',
   app_metadata: {}, user_metadata: {}, identities: [], created_at: '2026-10-03T00:00:00Z' }
 const BASE = 'http://localhost/api/outbound'
-const member = { client_id: CLIENT, user_id: USER, email: 'member@example.test', role: 'client_viewer', state: 'active', version: 1 }
+const member = { client_id: CLIENT, user_id: USER, email: 'member@example.test', role: 'client_viewer', state: 'active', version: 1, is_agency_owner: false }
 const invitation = { id: INVITATION, client_id: CLIENT, email: 'future@example.test', role: 'client_member',
   status: 'pending', expires_at: '2026-10-10T00:00:00Z', created_at: '2026-10-03T00:00:00Z' }
 type Reply = { path: string; body: unknown; status?: number }
@@ -88,7 +88,7 @@ test('GET checks manager authority and emits only neutral tenant-scoped list DTO
     assert.equal(call.cache, 'no-store')
     if (call.url.pathname.startsWith('/rest/')) assert.equal(call.url.searchParams.get('client_id'), `eq.${CLIENT}`)
   }
-  assert.equal(calls[2].url.searchParams.get('select'), 'client_id,user_id,email,role,state,version')
+  assert.equal(calls[2].url.searchParams.get('select'), 'client_id,user_id,email,role,state,version,is_agency_owner')
   assert.equal(calls[3].url.searchParams.get('select'), 'id,client_id,email,role,status,expires_at,created_at')
 })
 

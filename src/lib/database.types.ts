@@ -992,7 +992,7 @@ isOneToOne: false
                   ]
                 },"client_outreach_team": {
                   Row: {
-                    "client_id": string | null,"email": string | null,"role": string | null,"state": string | null,"user_id": string | null,"version": number | null
+                    "client_id": string | null,"email": string | null,"is_agency_owner": boolean | null,"role": string | null,"state": string | null,"user_id": string | null,"version": number | null
                   }
                   Relationships: [
 

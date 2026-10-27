@@ -9,7 +9,7 @@ const state = z.enum(['active', 'suspended', 'revoked'])
 const version = z.number().int().positive().max(Number.MAX_SAFE_INTEGER)
 const token = z.string().regex(/^[a-f0-9]{64}$/i)
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254))
-const memberSchema = z.object({ client_id: uuid, user_id: uuid, email: z.string().nullable(), role, state, version })
+const memberSchema = z.object({ client_id: uuid, user_id: uuid, email: z.string().nullable(), role, state, version, is_agency_owner: z.boolean().default(false) })
 const invitationSchema = z.object({
   id: uuid, client_id: uuid, email: z.string(), role,
   status: z.enum(['pending', 'accepted', 'revoked', 'expired']), expires_at: z.string(), created_at: z.string(),
@@ -72,7 +72,7 @@ export function createOutboundTeamHandlers(config?: OutboundApiConfig & { servic
       if (!workspace.data || !['client_admin', 'agency_owner'].includes(workspace.data.role ?? '')) throw new ApiError(403)
       const [members, invitations] = await Promise.all([
         readPages(clientId.data, memberSchema, (offset) => client.from('client_outreach_team')
-          .select('client_id,user_id,email,role,state,version').eq('client_id', clientId.data)
+          .select('client_id,user_id,email,role,state,version,is_agency_owner').eq('client_id', clientId.data)
           .order('email').order('user_id').range(offset, offset + PAGE_SIZE - 1)),
         readPages(clientId.data, invitationSchema, (offset) => client.from('client_outreach_invitations')
           .select('id,client_id,email,role,status,expires_at,created_at').eq('client_id', clientId.data)

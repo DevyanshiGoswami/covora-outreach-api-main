@@ -85,7 +85,7 @@ test('only managers see their team or invite allowed roles, without global profi
   const team = await f.supabase.from('client_outreach_team').select('*').eq('client_id', f.client.id)
   assert.ifError(team.error)
   assert.deepEqual(team.data?.map((row) => row.user_id).sort(), [f.user.id, viewer.user.id, operator.user.id].sort())
-  assert.deepEqual(Object.keys(team.data![0]).sort(), ['client_id', 'email', 'role', 'state', 'user_id', 'version'])
+  assert.deepEqual(Object.keys(team.data![0]).sort(), ['client_id', 'email', 'is_agency_owner', 'role', 'state', 'user_id', 'version'])
   await invite(owner.session, f.client.id, stranger.user.email, 'operator')
   assert.ifError((await admin.from('client_features').update({ enabled: false }).eq('client_id', f.client.id).eq('feature', 'outreach_app')).error)
   assert.equal((await owner.session.rpc('create_outreach_invitation', { p_client_id: f.client.id, p_email: 'new@test.local', p_role: 'client_admin' })).error?.code, '42501')

@@ -38,3 +38,12 @@ Do not delete the migration tables to roll back application code: preserve the a
 ## Verification completed
 
 Local verification passed 116 database tests (including five owner-access integration scenarios), 277 backend unit tests, six tooling tests, and 130 frontend tests. Both applications passed lint, type checking, optimized builds, and runtime dependency audits (zero reported vulnerabilities). Chrome exercised new account activation, password setup, acceptance, logout/login, mobile layout, and client-admin denial. These results do not establish production deployment readiness without the reviewed migration and environment rollout above.
+
+## Covora team synchronization (October 26, 2026)
+
+Active agency owners now automatically appear in Covora's Team and Accounts under
+the same identity, with an Agency owner badge. Owner invitations still require
+acceptance. This automatic access is derived from ownership and disappears when
+ownership is suspended or revoked. Separate client memberships are preserved;
+connection history is retained. Only the linked person authenticates their accounts.
+Other clients' rosters are unchanged. See `learnings/2026-10-26-covora-owner-team.md`.
