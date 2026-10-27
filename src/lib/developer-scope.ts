@@ -6,6 +6,7 @@ import { developmentRuntime, requireOwnedResource, type DeveloperSession } from 
 const rules: Record<string, string[]> = {
  '/api/outbound/accounts': ['GET','POST'], '/api/outbound/accounts/verify': ['POST'],
  '/api/outbound/conversations': ['GET'], '/api/outbound/leads': ['GET'], '/api/outbound/leads/escrow': ['GET'],
+ '/api/outbound/clickup': ['GET'],
  '/api/outbound/setup': ['GET','POST','PATCH'], '/api/outbound/team': ['GET'],
  '/api/outbound/team/invitations': ['POST','DELETE'], '/api/outbound/team/members': ['PATCH'],
  '/api/outbound/comments': ['GET','POST'], '/api/onboarding/people': ['GET','POST'],
@@ -45,6 +46,10 @@ export async function scopeDevelopmentResponse(request: Request, response: Respo
    const body = await response.json()
    return json({ userId: scope.userId, isOwner: true, canManageClients: false,
      workspaces: Array.isArray(body.workspaces) ? body.workspaces.filter((row: {id: string}) => row.id === scope.clientId) : [] })
+ }
+ if (path === '/api/outbound/clickup') {
+   const body = await response.json()
+   return json({ ...body, canManage: false, configured: false })
  }
  if (path === '/api/onboarding/integrations') {
    const body = await response.json()

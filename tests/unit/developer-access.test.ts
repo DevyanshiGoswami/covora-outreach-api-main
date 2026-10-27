@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createClient } from '@supabase/supabase-js'
 import { scopedDataQuery } from '../../src/lib/developer-data'
-import { authorizeDevelopmentRequest } from '../../src/lib/developer-scope'
+import { authorizeDevelopmentRequest, scopeDevelopmentResponse } from '../../src/lib/developer-scope'
 import { type DeveloperSession } from '../../src/lib/developer-session'
 const id = '10000000-0000-4000-8000-000000000001'
 const other = '10000000-0000-4000-8000-000000000002'
@@ -53,6 +53,7 @@ test('API allowlist binds both reads and writes and denies future or global endp
   req(`/api/outbound/accounts?clientId=${other}`),req(`/api/outbound/accounts?clientId=${id}&clientId=${other}`),
   req('/api/outbound/accounts','POST',{clientId:other}), req('/api/outbound/accounts','DELETE',{clientId:id}),
   req('/api/outbound/future?clientId='+id),req('/api/onboarding/admin-integrations'),req('/api/outbound/owners'),
+  req('/api/onboarding/clickup-app'),req('/api/onboarding/clickup-app','POST',{action:'save'}),
   req('/api/onboarding/clients/remove','POST',{clientId:id}), req('/api/onboarding/integrations','POST',{clientId:id}),
   req('/api/outbound/invitations/accept','POST',{clientId:id}),
  ]) await assert.rejects(()=>authorizeDevelopmentRequest(request,scope))
@@ -62,4 +63,14 @@ test('oversized streamed bodies are refused without waiting for a cloned branch'
  const request=new Request('https://gateway.example.test/api/outbound/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"clientId":"'+id+'","padding":"'+'x'.repeat(9000)+'"}'})
  await assert.rejects(()=>authorizeDevelopmentRequest(request,scope),{status:400})
  await request.body?.cancel()
+})
+
+
+test('connected development sees only its own CRM metadata and cannot authorize or disconnect', async()=>{
+ const request=new Request(`https://gateway.example.test/api/outbound/clickup?clientId=${id}`)
+ await authorizeDevelopmentRequest(request,scope)
+ await assert.rejects(()=>authorizeDevelopmentRequest(new Request(`https://gateway.example.test/api/outbound/clickup?clientId=${other}`),scope))
+ for(const action of ['start','complete','disconnect']) await assert.rejects(()=>authorizeDevelopmentRequest(new Request('https://gateway.example.test/api/outbound/clickup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,clientId:id})}),scope))
+ const response=await scopeDevelopmentResponse(request,Response.json({connected:true,canManage:true,configured:true,workspaces:[{name:'Covora'}]}),scope)
+ assert.deepEqual(await response.json(),{connected:true,canManage:false,configured:false,workspaces:[{name:'Covora'}]})
 })

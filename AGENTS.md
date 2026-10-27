@@ -23,3 +23,21 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## ClickUp authorization (October 26, 2026)
+
+The user authorized client-owned ClickUp OAuth from Leads, limited to authorization
+and authorized Workspace metadata for now. Client administrators and agency owners
+may connect/disconnect; other active roles can read metadata. No task/lead imports,
+exports to ClickUp, or sync jobs are authorized by this feature. Tokens remain in
+Vault. Keep state/browser proof, actor/version binding, expiry, one-time use and
+post-exchange permission checks. Real provider consent requires app registration.
+
+## ClickUp admin app setup authorization (October 26, 2026)
+
+The user authorized a ClickUp card alongside the existing admin integrations.
+Agency owners may enter the shared OAuth app Client ID and Client Secret through
+verified server actions. Secrets are transient form inputs only in the frontend;
+the backend stores them in Vault and returns metadata only. This configures the
+Covora app; it does not connect a shared ClickUp account for all clients. Preserve
+separate client grants, app-version fencing, and the authorization-only scope.
