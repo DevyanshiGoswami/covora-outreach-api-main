@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { ApiError, checkDatabaseError, createOutboundHandler, json, type OutboundApiConfig } from './outbound-http'
 import { campaignPlanSchema } from './outbound-campaign-plans-api'
 
+const EPM_CLIENT_ID = '26a2cffb-47f4-4231-9195-b4f772751c6d'
 const uuid = z.uuid()
 const nonnegative = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const querySchema = z.strictObject({
@@ -12,6 +13,7 @@ const querySchema = z.strictObject({
   list: z.union([uuid, z.literal('')]).default(''),
   planId: uuid.optional(),
   audience: z.enum(['all', 'hiring_partners', 'athletes']).default('all'),
+  tier: z.enum(['all', '1', '2', '3', 'unassigned']).default('all'),
   state: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
   city: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().max(250).default(''),
   email: z.enum(['all', 'available', 'verified']).default('all'),
@@ -26,6 +28,13 @@ const locationSchema = z.object({
 }).refine(location => (location.status !== 'known' || Boolean(location.city && location.state && location.country))
   && (!['unknown', 'conflict'].includes(location.status) || (!location.city && !location.state && !location.country)))
 const locationOption = z.object({ value: z.string().max(250), label: z.string().max(250), count: nonnegative.refine(count => count > 0) })
+const tierEvidenceSchema = z.object({
+  rationale: z.string().max(2000), gaps: z.array(z.string().max(500)).max(12),
+  sources: z.array(z.object({
+    url: z.string().max(1999).regex(/^https:\/\/([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}(\/[^\s?#]*)?$/),
+    title: z.string().max(300), fact: z.string().max(800),
+  })).max(10),
+})
 export const leadSchema = z.object({
   id: uuid, clientId: uuid, campaignId: uuid.nullable(), campaignName: z.string().max(500).nullable(),
   listId: uuid.nullable(), listName: z.string().max(500).nullable(),
@@ -42,6 +51,8 @@ export const leadSchema = z.object({
   contactPreference: z.enum(['email_and_linkedin', 'linkedin_first']).nullable().optional(),
   researchGaps: z.string().max(4000).nullable().optional(),
   audience: z.enum(['hiring_partners', 'athletes']).nullable().optional(),
+  hiringTier: z.union([z.literal(1), z.literal(2), z.literal(3)]).nullable().optional(),
+  hiringTierEvidence: tierEvidenceSchema.optional(),
   personLocation: locationSchema.nullable().optional(),
   icebreaker: z.string().max(2000).regex(/^[^\x00-\x1f\x7f?‐‑‒–—―-]+$/).nullable().optional(),
   researchedAt: z.iso.datetime({ offset: true }).nullable().optional(),
@@ -55,6 +66,7 @@ const pageSchema = z.object({
   lists: z.array(z.object({ id: uuid, name: z.string().max(500) })).max(501),
   filterOptionsTruncated: z.boolean(),
   audienceEnabled: z.boolean(),
+  tierEnabled: z.boolean(),
   locationOptions: z.object({ states: z.array(locationOption).max(1001), cities: z.array(locationOption).max(5001) }),
   selectedPlan: campaignPlanSchema.nullable().optional(),
 })
@@ -78,7 +90,7 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       ...(value.campaign ? { p_campaign: value.campaign } : {}),
       ...(value.list ? { p_list: value.list } : {}),
       ...(value.planId ? { p_plan: value.planId } : {}),
-      p_audience: value.audience, p_state: value.state, p_city: value.city,
+      p_audience: value.audience, p_state: value.state, p_city: value.city, p_tier: value.tier,
       p_email: value.email, p_linkedin: value.linkedin, p_status: value.status, p_sort: value.sort, p_page: value.page,
     })
     checkDatabaseError(result.error)
@@ -91,7 +103,8 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
         || page.leads.some(lead => lead.audience !== page.selectedPlan!.audience
           || (page.selectedPlan!.channel === 'linkedin' && (!lead.linkedinUrl || lead.linkedinVerified !== true))
           || (page.selectedPlan!.channel === 'email' && (!lead.email || lead.emailVerification !== 'verified' || lead.emailValidation !== 'valid')))))) throw new ApiError(500)
-    if (page.clientId !== value.clientId || page.leads.some(lead => lead.clientId !== value.clientId
+    if (page.tierEnabled !== (value.clientId === EPM_CLIENT_ID)
+      || page.clientId !== value.clientId || page.leads.some(lead => lead.clientId !== value.clientId
       || (value.campaign !== '' && lead.campaignId !== value.campaign)
       || (value.list !== '' && lead.listId !== value.list)
       || (lead.campaignId === null) !== (lead.campaignName === null)
@@ -99,6 +112,9 @@ export function createOutboundLeadHandlers(config?: OutboundApiConfig) {
       || (lead.campaignId === null && lead.listId === null)
       || (lead.linkedinVerified === true && !lead.linkedinUrl)
       || (value.audience !== 'all' && lead.audience !== value.audience)
+      || ((lead.hiringTier !== undefined || lead.hiringTierEvidence !== undefined) && (!page.tierEnabled || lead.audience !== 'hiring_partners'))
+      || (value.tier !== 'all' && (!page.tierEnabled || lead.audience !== 'hiring_partners'
+        || (value.tier === 'unassigned' ? lead.hiringTier !== null : lead.hiringTier !== Number(value.tier))))
       || (value.state !== '' && (!lead.personLocation?.state || `${lead.personLocation.country}|${lead.personLocation.state}` !== value.state))
       || (value.city !== '' && (!lead.personLocation?.city || `${lead.personLocation.country}|${lead.personLocation.state ?? ''}|${lead.personLocation.city}` !== value.city)))
       || new Set(page.leads.map(lead => lead.id)).size !== page.leads.length

@@ -48,7 +48,7 @@ test('invalid requests and unsupported activation metadata fail closed', async (
 })
 
 test('plan filter binds to the directory and rejects inconsistent selected plan or roster', async () => {
-  const page = { clientId, leads: [], total: 0, page: 1, pageSize: 36, summary: { total: 0, verifiedEmail: 0, withLinkedIn: 0, companies: 0 }, companies: [], campaigns: [], lists: [], filterOptionsTruncated: false, audienceEnabled: false, locationOptions: { states: [], cities: [] }, selectedPlan: plan }
+  const page = { clientId, leads: [], total: 0, page: 1, pageSize: 36, summary: { total: 0, verifiedEmail: 0, withLinkedIn: 0, companies: 0 }, companies: [], campaigns: [], lists: [], filterOptionsTruncated: false, audienceEnabled: false, tierEnabled: false, locationOptions: { states: [], cities: [] }, selectedPlan: plan }
   const h = harness(page)
   assert.equal((await h.leads.GET(request(`clientId=${clientId}&planId=${id}`))).status, 200)
   assert.equal((h.calls[1].body as Record<string, unknown>).p_plan, id)

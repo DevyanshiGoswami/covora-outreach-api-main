@@ -1262,7 +1262,7 @@ isOneToOne: false
 { Args: { "p_campaign"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_status"?: string }; Returns: Json
                            },
 "list_outreach_leads_v2":
-{ Args: { "p_audience"?: string,"p_campaign"?: string,"p_city"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_plan"?: string,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_state"?: string,"p_status"?: string }; Returns: Json
+{ Args: { "p_audience"?: string,"p_campaign"?: string,"p_city"?: string,"p_client_id": string,"p_company"?: string,"p_email"?: string,"p_linkedin"?: string,"p_list"?: string,"p_page"?: number,"p_plan"?: string,"p_q"?: string,"p_role"?: string,"p_sort"?: string,"p_state"?: string,"p_status"?: string,"p_tier"?: string }; Returns: Json
                            },
 "list_outreach_owners":
 { Args: Record<PropertyKey, never>; Returns: Json

@@ -9,9 +9,12 @@ export async function compatibleDirectory(client: SupabaseClient<Database>, args
   assert.equal(next.error?.code, prior.error?.code, 'v2 must preserve the v1 authorization and validation result')
   if (!prior.error) {
     const projected = structuredClone(next.data) as { [key: string]: unknown; leads: Record<string, unknown>[] }
+    delete projected.tierEnabled
     delete projected.audienceEnabled
     delete projected.locationOptions
     for (const lead of projected.leads) {
+      delete lead.hiringTierEvidence
+      delete lead.hiringTier
       delete lead.audience
       delete lead.personLocation
       delete lead.icebreaker

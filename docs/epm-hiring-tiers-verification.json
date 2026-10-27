@@ -1,0 +1,113 @@
+{
+  "status": "local-ready-with-unrelated-baseline-test-failures",
+  "scope": "EPM Hiring Partners assessed company tier read projection and filtering only",
+  "baseCommit": "180ed3efa9d9577fb613c4d0c6f09bb05cd4ef64",
+  "migration": "0143_outreach_lead_hiring_tiers.sql",
+  "productionMutation": false,
+  "deployed": false,
+  "pushed": true,
+  "committed": true,
+  "schemaGeneration": {
+    "source": "fresh isolated migrated local schema",
+    "project": "Covora_EPM_Hiring_Tiers_20261027",
+    "apiPort": 62121,
+    "databasePort": 62122,
+    "generatedFile": "src/lib/database.types.ts",
+    "generatedDiff": "optional p_tier argument only; regenerated after evidence helper, unchanged",
+    "temporaryStackStatus": "stopped with backup; only this newly created stack stopped"
+  },
+  "checks": {
+    "focusedApi": {
+      "passed": 11,
+      "failed": 0
+    },
+    "affectedDatabaseRegression": {
+      "passed": 57,
+      "failed": 0,
+      "includes": [
+        "hiring tiers",
+        "directory/v1 compatibility",
+        "person filters",
+        "campaign plans and generic-plan performance",
+        "lead-alert regression"
+      ]
+    },
+    "fullUnit": {
+      "passed": 371,
+      "failed": 1
+    },
+    "tooling": {
+      "passed": 6,
+      "failed": 0
+    },
+    "initialFullDatabase": {
+      "passed": 239,
+      "failed": 3,
+      "resolvedByAffectedRerun": [
+        "tier fixture unique priority ranks",
+        "temporary harness local runtime port pin"
+      ]
+    },
+    "lint": "passed",
+    "typecheck": "passed",
+    "productionBuild": "passed",
+    "runtimeAudit": {
+      "vulnerabilities": 0
+    },
+    "independentReview": "no blocking findings",
+    "tierEvidenceDatabase": {
+      "passed": 7,
+      "failed": 0
+    },
+    "tierEvidenceApi": {
+      "passed": 9,
+      "failed": 0
+    },
+    "tierEvidenceRegression": {
+      "passed": 17,
+      "failed": 0
+    },
+    "requiredPullRequestCI": "All gates passed at initial feature head; rerunning after evidence projection",
+    "tierEvidenceUI": "Assigned and unassigned drawer: rationale, gaps and source link verified"
+  },
+  "remainingBaselineFailures": [
+    {
+      "file": "tests/unit/outbound-comments-api.test.ts",
+      "line": 114,
+      "name": "database-valid astral author names remain readable in lists, request details and replies",
+      "reason": "Existing comments authorName max(200) rejects 200 astral characters counted as 400 UTF-16 code units. Reproduced alone; unchanged code."
+    },
+    {
+      "file": "tests/db/outreach-onboarding.test.ts",
+      "line": 366,
+      "name": "rejected email initialization can be reviewed and retried without a consent wait",
+      "reason": "Existing expiresAt <= Date.now() assertion fails. Reproduced alone; unrelated onboarding behavior unchanged."
+    }
+  ],
+  "releaseOrder": [
+    "Apply migration 0143 to independent outbound database",
+    "Release API requiring new RPC signature",
+    "Release frontend"
+  ],
+  "limitations": [
+    "No hosted database or deployment verification",
+    "No backfill or data reclassification performed",
+    "Tier is a company segment, never qualification or outreach approval"
+  ],
+  "logs": {
+    "affectedDatabase": "/tmp/covora-epm-tier-db-affected-final.log",
+    "initialFullDatabase": "/tmp/covora-epm-tier-db-all.log",
+    "unit": "/tmp/covora-epm-tier-unit.log",
+    "build": "/tmp/covora-epm-tier-build.log"
+  },
+  "concurrentRelease": {
+    "base": "36e039b5ea305b0d42c7b3f741dcbc03b06f7271",
+    "preservedMigration": "0142_outreach_campaign_plan_sequences.sql",
+    "reason": "Concurrent release occupied 0142; original guard rejected without changes.",
+    "combinedDatabaseTests": 19,
+    "focusedApiTests": 15,
+    "frontendTests": 241,
+    "regeneratedTypesMatch": true,
+    "localBuilds": "passed"
+  }
+}

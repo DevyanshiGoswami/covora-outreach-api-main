@@ -9,7 +9,7 @@ const LEAD = '9d375705-20e1-4c5e-a0af-be175888827f'
 const JWT = 'synthetic-user-token'
 const user = { id: USER, aud: 'authenticated', role: 'authenticated', email: 'member@example.test', app_metadata: {}, user_metadata: {}, identities: [], created_at: '2026-10-03T00:00:00Z' }
 const lead = { id: LEAD, clientId: CLIENT, campaignId: CAMPAIGN, campaignName: 'Campaign', listId: null, listName: null, firstName: 'Jane', lastName: 'Sample', fullName: 'Jane Sample', company: 'Acme', jobTitle: 'CEO', location: null, email: 'jane@example.test', emailVerification: 'unknown', linkedinUrl: null, linkedinVerified: null, status: 'in_sequence', interest: null, lastActivityAt: null }
-const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], lists: [], filterOptionsTruncated: false, audienceEnabled: false, locationOptions: { states: [], cities: [] } }
+const page = { clientId: CLIENT, leads: [lead], total: 1, page: 1, pageSize: 36, summary: { total: 1, verifiedEmail: 0, withLinkedIn: 0, companies: 1 }, companies: ['Acme'], campaigns: [{ id: CAMPAIGN, name: 'Campaign' }], lists: [], filterOptionsTruncated: false, audienceEnabled: false, tierEnabled: false, locationOptions: { states: [], cities: [] } }
 function request(query = `clientId=${CLIENT}`, authorization = `Bearer ${JWT}`) {
   return new Request(`https://backend.invalid/api/outbound/leads?${query}`, { headers: { authorization, cookie: 'ignored' } })
 }
@@ -40,7 +40,7 @@ test('lead directory verifies bearer and binds the RPC to the same identity; pri
     assert.equal(call.headers.get('apikey'), 'public-key')
     assert.equal(call.cache, 'no-store')
   }
-  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'priority', p_page: 1 })
+  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_tier: 'all', p_client_id: CLIENT, p_q: '', p_role: 'all', p_company: '', p_email: 'all', p_linkedin: 'all', p_status: 'all', p_sort: 'priority', p_page: 1 })
 })
 
 test('auth denial and invalid filter requests never read leads; duplicate/unknown keys and malformed pages fail closed', async () => {
@@ -63,7 +63,7 @@ test('validated filters pass as bound RPC arguments and excessive pages accept l
   const { handlers, calls } = harness()
   const response = await handlers.GET(request(`clientId=${CLIENT}&q=%20Jane%20&role=owners-executives&company=Acme&campaign=${CAMPAIGN}&email=verified&linkedin=available&status=contacted&sort=name&page=1000000`))
   assert.equal(response.status, 200)
-  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_client_id: CLIENT, p_q: 'Jane', p_role: 'owners-executives', p_company: 'Acme', p_campaign: CAMPAIGN, p_email: 'verified', p_linkedin: 'available', p_status: 'contacted', p_sort: 'name', p_page: 1000000 })
+  assert.deepEqual(JSON.parse(calls[1].body), { p_audience: 'all', p_state: '', p_city: '', p_tier: 'all', p_client_id: CLIENT, p_q: 'Jane', p_role: 'owners-executives', p_company: 'Acme', p_campaign: CAMPAIGN, p_email: 'verified', p_linkedin: 'available', p_status: 'contacted', p_sort: 'name', p_page: 1000000 })
 })
 
 test('unexpected tenant, malformed DTO, inconsistent pagination and unsafe URLs are denied without exposing contents', async () => {
@@ -131,4 +131,57 @@ test('audience and location inputs are bound to v2 and response location evidenc
     { ...enriched, leads: [{ ...enriched.leads[0], personLocation: null }] }]) {
     assert.equal((await harness(bad).handlers.GET(request(`clientId=${CLIENT}&audience=hiring_partners&state=US%7CTX`))).status, 500)
   }
+})
+
+
+test('hiring tiers are bound filters with strict EPM-only response projection', async () => {
+  const epm = '26a2cffb-47f4-4231-9195-b4f772751c6d'
+  const epmLead = { ...lead, clientId: epm, audience: 'hiring_partners', hiringTier: 2 }
+  const epmPage = { ...page, clientId: epm, tierEnabled: true, leads: [epmLead] }
+  for (const tier of ['all', '1', '2', '3', 'unassigned']) {
+    const hiringTier = tier === 'unassigned' ? null : tier === 'all' ? 2 : Number(tier)
+    const valid = harness({ ...epmPage, leads: [{ ...epmLead, hiringTier }] })
+    const response = await valid.handlers.GET(request(`clientId=${epm}&tier=${tier}&audience=hiring_partners`))
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).leads[0].hiringTier, hiringTier)
+    assert.equal(JSON.parse(valid.calls[1].body).p_tier, tier)
+  }
+  for (const query of ['tier=0', 'tier=4', 'tier=01', 'tier=Tier%201', 'tier=', 'tier=1&tier=2']) {
+    const invalid = harness(epmPage)
+    assert.equal((await invalid.handlers.GET(request(`clientId=${epm}&${query}`))).status, 400)
+    assert.equal(invalid.calls.length, 1)
+  }
+  for (const invalidPage of [
+    { ...epmPage, tierEnabled: false },
+    { ...page, tierEnabled: true },
+    { ...page, leads: [{ ...lead, audience: 'hiring_partners', hiringTier: 2 }] },
+    { ...epmPage, leads: [{ ...epmLead, audience: 'athletes' }] },
+    ...['2', 0, 4, 1.5].map(hiringTier => ({ ...epmPage, leads: [{ ...epmLead, hiringTier }] })),
+  ]) {
+    const response = await harness(invalidPage).handlers.GET(request(`clientId=${invalidPage.clientId}`))
+    assert.equal(response.status, 500)
+    assert.doesNotMatch(await response.text(), /jane@example|Acme|hiringTier/)
+  }
+  for (const tier of ['1', '3', 'unassigned']) {
+    assert.equal((await harness(epmPage).handlers.GET(request(`clientId=${epm}&tier=${tier}`))).status, 500)
+  }
+  assert.equal((await harness({ ...epmPage, leads: [{ ...epmLead, hiringTier: undefined }] }).handlers.GET(request(`clientId=${epm}&tier=unassigned`))).status, 500)
+  assert.equal((await harness({ ...epmPage, leads: [{ ...epmLead, audience: 'athletes', hiringTier: undefined }] }).handlers.GET(request(`clientId=${epm}&audience=athletes`))).status, 200)
+})
+
+test('tier evidence is bounded, strips internal properties and is restricted to EPM hiring partners', async () => {
+  const epm = '26a2cffb-47f4-4231-9195-b4f772751c6d'
+  const evidence = { rationale: 'Independent distributor', gaps: ['Confirm hiring'], sources: [{ url: 'https://example.com/company', title: 'Company profile', fact: 'Represents manufacturers' }] }
+  const epmLead = { ...lead, clientId: epm, audience: 'hiring_partners', hiringTier: null, hiringTierEvidence: evidence }
+  const epmPage = { ...page, clientId: epm, tierEnabled: true, leads: [epmLead] }
+  const response = await harness({ ...epmPage, leads: [{ ...epmLead, hiringTierEvidence: { ...evidence, privateKey: 'hidden' } }] }).handlers.GET(request(`clientId=${epm}`))
+  assert.equal(response.status, 200)
+  assert.deepEqual((await response.json()).leads[0].hiringTierEvidence, evidence)
+  for (const invalid of [null, { ...evidence, rationale: 'x'.repeat(2001) }, { ...evidence, gaps: [null] }, { ...evidence, gaps: Array(13).fill('gap') },
+    { ...evidence, sources: [{ ...evidence.sources[0], url: 'javascript:alert(1)' }] }, { ...evidence, sources: [{ ...evidence.sources[0], url: 'https://user:pass@example.com/' }] },
+    { ...evidence, sources: [{ ...evidence.sources[0], url: 'https://example.com/?token=private' }] }]) {
+    assert.equal((await harness({ ...epmPage, leads: [{ ...epmLead, hiringTierEvidence: invalid }] }).handlers.GET(request(`clientId=${epm}`))).status, 500)
+  }
+  assert.equal((await harness({ ...epmPage, leads: [{ ...epmLead, audience: 'athletes', hiringTier: undefined }] }).handlers.GET(request(`clientId=${epm}`))).status, 500)
+  assert.equal((await harness({ ...page, leads: [{ ...lead, hiringTierEvidence: evidence }] }).handlers.GET(request(`clientId=${CLIENT}`))).status, 500)
 })
