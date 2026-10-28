@@ -2,7 +2,8 @@
 
 Run the frontend and API on your laptop against the separate `covora-outreach-dev`
 database. Docker is not needed for normal application development. This is shared
-**test data**: edits are visible to other developers, but do not affect production.
+**development data**: edits are visible to other developers. The database is
+separate from production; the shared account integrations below use real services.
 
 ## First setup
 
@@ -31,8 +32,42 @@ The launcher pins the development project and validates both credentials' projec
 and role. It ignores inherited application environment variables and masks stale
 Next `.env` values without changing those files. Real sending, synchronization,
 cron access, notifications, password-recovery emails and the live development
-gateway are disabled. No production integration credentials are copied. Do not
-configure real integrations or import customer data into this database.
+gateway are disabled. Account connection is available through the shared admin
+integrations described below. Do not import customer data into this database.
+
+## Shared email and LinkedIn account connections
+
+On October 28, the user authorized reusing the existing admin-configured Instantly
+and HeyReach integrations in development. Both were verified through read-only
+provider calls, saved encrypted in the development database's Vault, and assigned
+to **Covora · Development**. No customer leads, campaigns, connected accounts or
+messages were copied. The sample workspace has no integration assignments.
+
+Every developer uses these same saved assignments; they do not need a separate
+provider account, API key, environment edit or integration setup. The key is
+resolved inside the backend for an authorized operation, never returned to the
+frontend. The development service key can resolve these credentials, so backend
+configuration is for trusted developers only. Provider key rotation requires a
+maintainer to refresh the saved development integration once for everyone.
+
+Open Accounts in **Covora · Development**, find your own row, and choose Connect
+under Email or LinkedIn. Complete your own mailbox consent or LinkedIn sign-in and
+verification. Other developers cannot sign in on your team identity's behalf.
+These are real account connections in the existing provider workspaces; the
+separate development database does not make external provider actions simulated.
+The backend stores the connection centrally, so restarting the local app does not
+remove it. An expired or revoked connection may require reauthentication.
+
+The development client keeps the `covora` slug so active agency owners are
+automatically added to its Team and Accounts using the existing owner-role rules.
+Its display name stays **Covora · Development**. New developers provisioned with
+`seed:cloud` therefore get their Accounts row without another provider setup.
+
+Connecting an account does **not** enable sending. Standard `dev:cloud` still
+disables compose, replies, scheduled synchronization and alerts. Real delivery and
+incoming-message testing need a separately enabled sender/campaign scope and a
+local sync runner; those were not activated by shared integration setup. No test
+message or connection request was sent as part of setup.
 
 ## Schema changes
 

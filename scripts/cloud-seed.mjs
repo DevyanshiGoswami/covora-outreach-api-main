@@ -15,7 +15,8 @@ try {
   const check = result => { if (result.error) throw new Error('Development seed operation failed. Inspect the development database before retrying.'); return result.data; };
   const hash = text => createHash('sha256').update(text).digest('hex');
   const workspaces = [
-    {id:'d0000000-0000-4000-8000-000000000001', slug:'covora-development', name:'Covora · Development'},
+    // The Covora slug derives Accounts entries from active agency ownership.
+    {id:'d0000000-0000-4000-8000-000000000001', slug:'covora', name:'Covora · Development'},
     {id:'d0000000-0000-4000-8000-000000000002', slug:'sample-workspace-development', name:'Sample workspace · Development'},
   ];
   for (let index=0; index<workspaces.length; index++) {
