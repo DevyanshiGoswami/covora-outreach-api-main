@@ -1,0 +1,35 @@
+# Outbound lead directory
+
+`GET /api/outbound/leads` exposes a dedicated, neutral directory of campaign leads already assigned to the authenticated client's outbound workspace. It never reads the content portal database or discovers/imports unrelated provider lists. Existing results views and contracts stay unchanged.
+
+The bearer is verified on every request. A single authenticated RPC checks the current product feature and active membership (including viewers or explicitly provisioned agency ownership) before reading any data. Base tables remain denied to browser roles. The RPC returns no provider identifiers, raw payloads or credentials; all rows, counts and filter options share one tenant-scoped snapshot.
+
+The directory returns 36 leads per page, literal case-insensitive search, AND-composed role/company/campaign/email/LinkedIn/status filters, deterministic company/name/role sorting, filtered totals and workspace-wide summary counts. Excessive valid page numbers clamp to the last page. Company options are bounded to 1,000 and campaign options to 500, with the currently selected authorized option retained beyond the cap. `filterOptionsTruncated` reports either cap; search and counts still cover the entire workspace.
+
+## Metadata and evidence
+
+Migration `0101_outreach_lead_directory.sql` adds nullable title, location, canonical LinkedIn URL and role grouping; email verification defaults to `unknown`, and LinkedIn verification stays nullable. Existing leads receive no invented verification evidence. The existing campaign sync updates these fields as each campaign's lead scan runs; a release operator can restart only the authorized campaigns' lead scans under the existing durable worker lease if a faster backfill is needed.
+
+The worker explicitly allows native `job_title` and native `verification_status`, plus known custom profile aliases for first/last names, company, job title, location and LinkedIn URL. It drops arbitrary payload fields. Native verification code `1` maps to `verified`; `-1/-2/-3/-4` map to `unverified`; pending, missing, strings and unknown values remain `unknown`. Custom verification booleans are never trusted. No currently supported field proves LinkedIn verification, so a valid URL means available, not verified. This mapping follows the [official Lead schema](https://developer.instantly.ai/api-reference/schemas/lead), checked October 5, 2026. The [list endpoint](https://developer.instantly.ai/api-reference/lead/list-leads) supplies the existing campaign-scoped read pages; no verification purchase or enrichment request is made.
+
+Only `http/https` individual LinkedIn `/in/<slug>` links on the exact LinkedIn host (including its www/country variant) normalize to `https://www.linkedin.com/in/<slug>`. Credentials, nonstandard ports, alternate paths, unsafe protocols and foreign hosts are rejected; query/hash tracking is dropped. Profile fields are plain text with control characters removed, whitespace normalized and length bounded. The SQL projection also normalizes historical display cells and global facets, so a malformed old field does not poison unrelated pages. Invalid or overlong historical email addresses project as unavailable with unknown verification and do not count as available/verified.
+
+Role grouping was extracted from the read-only content portal's tested title classifier. Known company wording is removed for classification only; the original job title remains visible. Missing titles are not invented and fall within the broad Manager / Other filter.
+
+## Verification and limits
+
+API tests cover bearer verification, same-JWT RPC binding, strict filters, provider-free projection, tenant mismatches, bounded pagination, failures and honest empty states. Database tests cover positive viewer access, other-tenant/anonymous/unassigned/revoked/feature-disabled denial, denied raw tables and mutations, retained legacy contracts, combined search/filters, pagination, bounded facets, dirty historical text, email and URL evidence. Mapper tests exercise native verification semantics, safe links, malicious/custom payload flags and conservative roles.
+
+Local fixtures use only the isolated `Covora_Outreach_API` stack, API 60321 / database 60322. These checks do not prove live credentials, cloud migrations, provider field availability or frontend deployment. Those release checks must target the independent outbound resources only. The old `app.covora.app` portal remains a read-only reference.
+
+## Person location and audience filters, October 22
+
+The HTTP directory now calls `list_outreach_leads_v2`; the original RPC is retained unchanged for existing consumers. Optional query parameters are `audience=all|hiring_partners|athletes`, `state` and `city`. Geographic values are opaque keys returned by the API, such as `US|TX` and `US|TX|Austin`, not free text or headquarters locations.
+
+Audience is explicit reviewed metadata, falling back only to lists beginning `Hiring Partners` or `Athletes`. Unclassified rows remain in All. `audienceEnabled` is true only for EPM when its authorized visible cohort has classified rows. Person location requires a saved individual profile match and structured `personLocation` evidence. Conflicting, unknown, malformed or unmatched evidence has no usable city/state. Raw legacy location text remains visible without being treated as a verified city or state. Profile claims are not independently verified residence.
+
+All filters compose before pagination and preserve the existing client authorization, imported review boundary and campaign identity overlay. `locationOptions.states` applies all nonlocation filters and ignores both location selections. `locationOptions.cities` additionally applies the selected state, ignoring the city selection. Each option contains `value`, `label` and full cohort `count`. States are bounded to 1,000 and cities to 5,000, retaining an authorized selected value; `filterOptionsTruncated` reports truncation. Workspace summary counts retain their existing semantics.
+
+Per lead, the allowlisted additions are `audience`, `personLocation: {city,state,country,status}` and `icebreaker`. An icebreaker is exposed only when its saved review is fact checked, has a public source URL and passes copy constraints. It remains a draft observation, not permission to send. Existing `fitReason`, `researchGaps`, `researchedAt` and `sourceUrls` retain caveats; absent fit research is not fabricated. Raw research, model ranks, provider names, private receipt paths and arbitrary evidence are never projected.
+
+Verification uses a newly created isolated `Covora_EPM_Leads_20261022` stack at ports 61321/61322. The test copy adjusts the local safety assertions to these explicit ports; no existing stack is reset. Regression tests cover full cohort filtering beyond one page, tenant and role denial, escrow mirror fencing, v1 compatibility, unknown categories, conflicting/partial locations and safe draft projection. Tests and local schema validation do not themselves imply production migration or deployment.

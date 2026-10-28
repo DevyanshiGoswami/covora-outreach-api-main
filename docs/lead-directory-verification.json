@@ -1,0 +1,33 @@
+{
+  "checkedAt": "2026-10-06T03:36:36.384245+00:00",
+  "project": "Covora_Outreach_API",
+  "target": "isolated local only",
+  "migration": "supabase/migrations/0101_outreach_lead_directory.sql",
+  "migrationSha256": "2cfe04dee38a9133952631156d800d6c2c8fb1ee34c55de4904f4b62e19880f4",
+  "checks": {
+    "unit": 215,
+    "tooling": 6,
+    "database": 92,
+    "lint": "pass",
+    "types": "pass",
+    "productionBuild": "pass",
+    "runtimeVulnerabilities": 0,
+    "freshShadowPublicPrivateReplay": "no schema changes"
+  },
+  "catalog": {
+    "leads": 0,
+    "clients": 0,
+    "authUsers": 0,
+    "anonDefinerGrants": 0,
+    "browserBaseGrants": 0,
+    "publicFunctionGrants": 0,
+    "publicTablesWithoutRls": 0
+  },
+  "review": "Independent review confirmed historical control-character P2 repaired; no remaining concrete findings.",
+  "limitations": [
+    "No cloud schema mutation or deployment by backend agent.",
+    "No live provider changes or messages; provider mapping unit fixtures only.",
+    "Existing leads need the regular scoped lead scan to populate new metadata.",
+    "Unsupported verification and absent profile fields remain unknown."
+  ]
+}

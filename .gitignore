@@ -1,0 +1,21 @@
+node_modules/
+.onboarding-local.json
+.artifacts/
+.next/
+out/
+.env*
+!.env.example
+.vercel/
+*.tsbuildinfo
+supabase/.temp/
+supabase/.branches/
+.DS_Store
+.agents/
+skills-lock.json
+
+# Private local owner demo credentials
+.owner-demo.json
+
+# Development-only mock sending-engine state
+.mock-instantly.json
+.mock-instantly.json.*.tmp

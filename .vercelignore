@@ -1,0 +1,15 @@
+.git
+.agents
+.github
+.env*
+.vercel
+.next
+node_modules
+/supabase/
+/tests/
+/docs/
+/scripts/
+skills-lock.json
+AGENTS.md
+README.md
+*.tsbuildinfo

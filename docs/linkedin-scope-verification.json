@@ -1,0 +1,99 @@
+{
+  "recorded_at_utc": "2026-10-06T03:02:52.763865+00:00",
+  "scope": "New isolated local outbound stack only; no cloud mutations, provider sends, campaign launches, or old portal access",
+  "local_project": "Covora_Outreach_API",
+  "api_port": 60321,
+  "database_port": 60322,
+  "shadow_port": 60320,
+  "migration": {
+    "file": "supabase/migrations/0099_outreach_campaign_channels.sql",
+    "sha256": "e053a93776ba3bc2e190078cbb0c71f7b804c84ceb984ea699207c70cbf69777"
+  },
+  "checks": {
+    "database_tests": {
+      "passed": 80,
+      "failed": 0,
+      "skipped": 0,
+      "duration_ms": 48633.49125,
+      "log": "/tmp/covora-linkedin-full-db-final.log",
+      "log_sha256": "55b21892af8fefc841d54ff1ff97679d6e460eaaf6eff0ea0efaeac1f661c010"
+    },
+    "unit_tests": {
+      "passed": 199,
+      "failed": 0
+    },
+    "tooling_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "typecheck": "passed",
+    "lint": "passed",
+    "generated_types": "real isolated public schema",
+    "fresh_migration_replay": {
+      "command": "supabase db diff --local --schema public,outreach_private",
+      "exit_code": 0,
+      "result": "No schema changes found",
+      "diff_ddl_empty": true,
+      "drop_statements": [],
+      "replayed_migrations": [
+        "0001",
+        "0090",
+        "0091",
+        "0092",
+        "0093",
+        "0094",
+        "0095",
+        "0096",
+        "0097",
+        "0098",
+        "0099"
+      ],
+      "log": "/tmp/covora-linkedin-schema-diff.log",
+      "log_sha256": "8ee09ef460acccac233e54a8a82ef5f6064590e1b0577560415c2360d1c14f69"
+    },
+    "exact_function_bodies_match": 18,
+    "campaign_scope_reset_trigger": "CREATE TRIGGER outreach_linkedin_campaign_scope BEFORE INSERT OR DELETE OR UPDATE OF messages_purged_at ON public.outreach_campaigns FOR EACH ROW EXECUTE FUNCTION outreach_private.reset_linkedin_campaign_scope()",
+    "tested_scope_cases": [
+      "Tenant and role denial",
+      "Personal and unmatched campaign rejection before persistence",
+      "Exact campaign and captured binding version requirement",
+      "No provider history request for zero approved campaigns",
+      "Email projection compatibility",
+      "Campaign scope resets cursor and fences stale page",
+      "Campaign withdrawal cancels pending reply",
+      "Concurrent withdrawal and dispatch serialize without deadlock"
+    ]
+  },
+  "catalog": {
+    "migration_versions": [
+      "0001",
+      "0090",
+      "0091",
+      "0092",
+      "0093",
+      "0094",
+      "0095",
+      "0096",
+      "0097",
+      "0098",
+      "0099"
+    ],
+    "public_base_tables": 30,
+    "public_base_tables_without_rls": 0,
+    "browser_base_table_grants": 0,
+    "anonymous_public_definer_grants": 0,
+    "public_execute_grants_custom_functions": 0,
+    "pg_cron_installed": 0,
+    "remaining_synthetic_clients": 0,
+    "remaining_synthetic_auth_users": 0,
+    "remaining_campaigns": 0,
+    "remaining_conversations": 0
+  },
+  "generated_types_sha256": "15c394a5c82b26f2d398e524dd6bc117726be9eb7aa7f41064366c13372fbc2d",
+  "verification_limits": [
+    "Simulated provider transport only; no real messages sent",
+    "No cloud schema/configuration verification by this agent",
+    "No real campaign IDs seeded or campaigns launched",
+    "No frontend cutover verified here"
+  ]
+}

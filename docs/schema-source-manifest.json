@@ -1,0 +1,61 @@
+[
+  {
+    "source": "supabase/migrations/0090_outreach_results.sql",
+    "source_sha256": "28d8b680655021b6a08caf50286d1f662b1a2c31da8b6582275038d1e42ed18d",
+    "extracted_sha256": "6b62743aeb62443ad66a68f5e34071e3247491e29e982786c2241b4dad0b718d",
+    "adaptations": [
+      "Removed content-portal brand campaign column/FK",
+      "Initial can_read fails closed until 0092 explicit membership helper"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0091_outreach_linkedin_results.sql",
+    "source_sha256": "fac7b4eca4889bb4f23c64b6a1e22eb75b1a945382dba2edb103f8daa1692db0",
+    "extracted_sha256": "f87ed0de8914ebe2739f295ed6a0f3b43d2c5a8f4ea6e36ccdc78d713ab7a581",
+    "adaptations": [
+      "Replaced old log-table dependency with independent service-owned neutral activity cohorts",
+      "Preserved view columns and unavailable outcome semantics; no initial rows"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0092_outreach_workspace_access.sql",
+    "source_sha256": "c43b17f742db7047b90d0752011cdb96a2b5fb652afe7e44d7f8bd8694c86db8",
+    "extracted_sha256": "3ec9ef6c4f4418391b842b1dc4be8ced5df356041fae79ce0263352f5a56a717",
+    "adaptations": [
+      "Provenance comment only; SQL body unchanged"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0093_outreach_team_access.sql",
+    "source_sha256": "a6754fc0f4be9201364827521fe98d6ce04d1dc7ce94576a6373ad8aed56be8f",
+    "extracted_sha256": "470041d8c9b44b7b674ba8b6ffac1fa82627e69e448b54f795a9f7850ec22a04",
+    "adaptations": [
+      "Provenance comment only; SQL body unchanged"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0094_outreach_account_verification.sql",
+    "source_sha256": "3ec8a8cbc902c80f23dcd9216935a173f6cf5315c4fa9476774628ac8f2f5b10",
+    "extracted_sha256": "bb5e1a897dcfecc0a44ebd3289b087498b40972b52e244d0df0920942483ffd8",
+    "adaptations": [
+      "Removed old inbox/campaign reservation checks/triggers; no legacy tables required",
+      "Retained canonical identity/advisory lock; 0097 completes product-local cross-table reservation"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0095_outreach_replies.sql",
+    "source_sha256": "29f9995b0beb57fc7d0ec1fe1156f509f5cb99fe57f9cea0a826e29e3a88fb6c",
+    "extracted_sha256": "229300cce9609491be7c24ccb0287ab94a814f38fe9299319bf74f3b5e8ddd70",
+    "adaptations": [
+      "Provenance comment only; SQL body unchanged"
+    ]
+  },
+  {
+    "source": "supabase/migrations/0096_outreach_lead_alerts.sql",
+    "source_sha256": "45907e2bf8db6c7712bf26fd45bc6769bf01e75e7c7ee5dc6085535758e1a1c2",
+    "extracted_sha256": "725e15aa672ac95bf477d21f6539527a38ec7d3f129989b2604804d0b1726240",
+    "adaptations": [
+      "Provenance comment only; SQL body unchanged"
+    ]
+  }
+]
