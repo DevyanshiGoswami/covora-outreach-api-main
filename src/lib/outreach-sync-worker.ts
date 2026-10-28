@@ -19,6 +19,7 @@ import {
 import { createSupabaseAdminClient } from '@/lib/supabase/admin'
 import { syncLinkedinConversations } from '@/lib/outreach-conversation-worker'
 import { syncNetworkCampaigns } from '@/lib/network-campaign-worker'
+import { syncLinkedinRequests } from '@/lib/linkedin-request-sync'
 
 type Admin = ReturnType<typeof createSupabaseAdminClient>
 type Campaign = Database['public']['Tables']['outreach_campaigns']['Row']
@@ -261,6 +262,9 @@ export async function syncOutreach(ctx: CronContext) {
   check(lease.error)
   if (!lease.data) return { ...result, deferred: 1, already_running: true }
   try {
+    const requests = await syncLinkedinRequests(ctx).catch(() => ({ request_pages: 0, requests_observed: 0, failed: 1, deferred: 0 }))
+    result.failed += requests.failed
+    result.deferred += requests.deferred
     // Share the same durable lease; history sync can never dispatch a reply.
     const linkedin = await syncLinkedinConversations(ctx).catch(() => ({ senders: 0, conversations: 0, failed: 1, deferred: 0 }))
     result.failed += linkedin.failed
@@ -380,7 +384,7 @@ export async function syncOutreach(ctx: CronContext) {
         })
       }
     }
-    return { ...result, linkedin_senders: linkedin.senders, linkedin_conversations: linkedin.conversations, network_campaigns: network.campaigns }
+    return { ...result, linkedin_request_pages: requests.request_pages, linkedin_requests_observed: requests.requests_observed, linkedin_senders: linkedin.senders, linkedin_conversations: linkedin.conversations, network_campaigns: network.campaigns }
   } finally {
     check((await admin.rpc('release_outreach_sync_lock', { p_token: token })).error)
   }

@@ -4,6 +4,7 @@ import type { Database } from '@/lib/database.types'
 import { resolveDeveloperSession, type DeveloperConfig } from './developer-session'
 import { authorizeDevelopmentRequest, scopeDevelopmentResponse } from './developer-scope'
 import { requireRuntimeDatabase } from './runtime-config'
+import { traceReachout, reachoutLog } from './reachout-log'
 
 export type OutboundApiConfig = { url: string; anonKey: string; fetch: typeof fetch; timeoutMs?: number; development?: DeveloperConfig }
 type ErrorStatus = 400 | 401 | 403 | 500
@@ -60,7 +61,7 @@ export async function readJson(request: Request, maxBytes = MAX_BODY_BYTES): Pro
 }
 
 /** Verify each bearer and bind all database calls to that same user JWT. */
-export function createOutboundHandler(config: OutboundApiConfig | undefined, messages: Record<ErrorStatus, string>) {
+export function createOutboundHandler(config: OutboundApiConfig | undefined, messages: Record<ErrorStatus, string>, timeoutMs = 8000) {
   async function authenticate(request: Request): Promise<SupabaseClient<Database>> {
     const token = request.headers.get('authorization')?.match(/^Bearer[\t ]+([^\s,]+)[\t ]*$/i)?.[1]
     if (!token || token.length > 16384) throw new ApiError(401)
@@ -69,7 +70,7 @@ export function createOutboundHandler(config: OutboundApiConfig | undefined, mes
     const anonKey = config?.anonKey ?? runtime?.anonKey
     if (!url || !anonKey) throw new ApiError(500)
     const fetchImpl = config?.fetch ?? fetch
-    const deadline = AbortSignal.timeout(config?.timeoutMs ?? 8000)
+    const deadline = AbortSignal.timeout(config?.timeoutMs ?? timeoutMs)
     const client = createClient<Database>(url, anonKey, {
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       global: {
@@ -97,6 +98,7 @@ export function createOutboundHandler(config: OutboundApiConfig | undefined, mes
 
   return function handle(operation: (request: Request, client: SupabaseClient<Database>) => Promise<Response>) {
     return async (request: Request): Promise<Response> => {
+      const execute = async () => {
       try {
         const token = request.headers.get('authorization')?.match(/^Bearer[\t ]+([^\s,]+)[\t ]*$/i)?.[1]
         if (token?.startsWith('cdev_')) {
@@ -111,8 +113,11 @@ export function createOutboundHandler(config: OutboundApiConfig | undefined, mes
         return await operation(request, await authenticate(request))
       } catch (error) {
         const status = error instanceof ApiError ? error.status : 500
+        if (new URL(request.url).pathname === "/api/outbound/reachout") reachoutLog("request.rejected", {status})
         return json({ error: messages[status] }, status)
       }
+      }
+      return new URL(request.url).pathname === "/api/outbound/reachout" ? traceReachout(request, execute) : execute()
     }
   }
 

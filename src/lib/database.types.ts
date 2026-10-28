@@ -359,6 +359,50 @@ isOneToOne: true
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_compose_commands": {
+                  Row: {
+                    "actor_id": string,"actor_role": string,"body_text": string,"channel": string,"checked_at": string | null,"claim_token": string | null,"client_id": string,"created_at": string,"error_code": string | null,"id": string,"lead_id": string,"recipient": string,"recipient_name": string,"remote_campaign_id": string | null,"remote_list_id": string | null,"sender_address": string,"sender_id": string,"sender_name": string,"sender_version": number,"status": string,"subject": string,"updated_at": string,"workspace_version": number
+                  }
+                  Insert: {
+                    "actor_id": string,"actor_role": string,"body_text": string,"channel": string,"checked_at"?: string | null,"claim_token"?: string | null,"client_id": string,"created_at"?: string,"error_code"?: string | null,"id": string,"lead_id": string,"recipient": string,"recipient_name": string,"remote_campaign_id"?: string | null,"remote_list_id"?: string | null,"sender_address": string,"sender_id": string,"sender_name": string,"sender_version": number,"status"?: string,"subject"?: string,"updated_at"?: string,"workspace_version": number
+                  }
+                  Update: {
+                    "actor_id"?: string,"actor_role"?: string,"body_text"?: string,"channel"?: string,"checked_at"?: string | null,"claim_token"?: string | null,"client_id"?: string,"created_at"?: string,"error_code"?: string | null,"id"?: string,"lead_id"?: string,"recipient"?: string,"recipient_name"?: string,"remote_campaign_id"?: string | null,"remote_list_id"?: string | null,"sender_address"?: string,"sender_id"?: string,"sender_name"?: string,"sender_version"?: number,"status"?: string,"subject"?: string,"updated_at"?: string,"workspace_version"?: number
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_compose_commands_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_compose_commands_sender_id_client_id_channel_fkey"
+      columns: ["sender_id","client_id","channel"]
+isOneToOne: false
+      referencedRelation: "outreach_reply_senders"
+      referencedColumns: ["id","client_id","channel"]
+    }
+                  ]
+                },"outreach_compose_settings": {
+                  Row: {
+                    "channel": string,"client_id": string,"enabled": boolean
+                  }
+                  Insert: {
+                    "channel": string,"client_id": string,"enabled"?: boolean
+                  }
+                  Update: {
+                    "channel"?: string,"client_id"?: string,"enabled"?: boolean
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_compose_settings_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_connection_reservations": {
                   Row: {
                     "channel": string,"email": string,"person_id": string
@@ -751,6 +795,81 @@ isOneToOne: false
       referencedColumns: ["id"]
     }
                   ]
+                },"outreach_linkedin_hooks": {
+                  Row: {
+                    "discovery_claim": string | null,"discovery_due_at": string,"discovery_offset": number,"enabled": boolean,"last_payload_hash": string | null,"last_received_at": string | null,"received_count": number,"secret_hash": string,"unsigned_hints_enabled": boolean,"workspace_id": string
+                  }
+                  Insert: {
+                    "discovery_claim"?: string | null,"discovery_due_at"?: string,"discovery_offset"?: number,"enabled"?: boolean,"last_payload_hash"?: string | null,"last_received_at"?: string | null,"received_count"?: number,"secret_hash": string,"unsigned_hints_enabled"?: boolean,"workspace_id": string
+                  }
+                  Update: {
+                    "discovery_claim"?: string | null,"discovery_due_at"?: string,"discovery_offset"?: number,"enabled"?: boolean,"last_payload_hash"?: string | null,"last_received_at"?: string | null,"received_count"?: number,"secret_hash"?: string,"unsigned_hints_enabled"?: boolean,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_linkedin_hooks_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: true
+      referencedRelation: "outreach_reply_workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"outreach_linkedin_requests": {
+                  Row: {
+                    "campaign_id": string,"checked_at": string,"client_id": string,"first_seen_at": string,"id": string,"recipient": string,"recipient_name": string,"sender_id": string,"status": string,"updated_at": string
+                  }
+                  Insert: {
+                    "campaign_id": string,"checked_at"?: string,"client_id": string,"first_seen_at"?: string,"id"?: string,"recipient": string,"recipient_name": string,"sender_id": string,"status": string,"updated_at"?: string
+                  }
+                  Update: {
+                    "campaign_id"?: string,"checked_at"?: string,"client_id"?: string,"first_seen_at"?: string,"id"?: string,"recipient"?: string,"recipient_name"?: string,"sender_id"?: string,"status"?: string,"updated_at"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_linkedin_requests_campaign_id_fkey"
+      columns: ["campaign_id"]
+isOneToOne: false
+      referencedRelation: "outreach_campaigns"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_linkedin_requests_client_id_fkey"
+      columns: ["client_id"]
+isOneToOne: false
+      referencedRelation: "clients"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_linkedin_requests_sender_id_fkey"
+      columns: ["sender_id"]
+isOneToOne: false
+      referencedRelation: "outreach_reply_senders"
+      referencedColumns: ["id"]
+    }
+                  ]
+                },"outreach_linkedin_scans": {
+                  Row: {
+                    "campaign_id": string,"completed_at": string | null,"due_at": string,"failures": number,"last_served_at": string | null,"page_offset": number,"requested_at": string,"started_at": string | null,"workspace_id": string
+                  }
+                  Insert: {
+                    "campaign_id": string,"completed_at"?: string | null,"due_at"?: string,"failures"?: number,"last_served_at"?: string | null,"page_offset"?: number,"requested_at"?: string,"started_at"?: string | null,"workspace_id": string
+                  }
+                  Update: {
+                    "campaign_id"?: string,"completed_at"?: string | null,"due_at"?: string,"failures"?: number,"last_served_at"?: string | null,"page_offset"?: number,"requested_at"?: string,"started_at"?: string | null,"workspace_id"?: string
+                  }
+                  Relationships: [
+                    {
+      foreignKeyName: "outreach_linkedin_scans_campaign_id_fkey"
+      columns: ["campaign_id"]
+isOneToOne: true
+      referencedRelation: "outreach_campaigns"
+      referencedColumns: ["id"]
+    },{
+      foreignKeyName: "outreach_linkedin_scans_workspace_id_fkey"
+      columns: ["workspace_id"]
+isOneToOne: false
+      referencedRelation: "outreach_reply_workspaces"
+      referencedColumns: ["id"]
+    }
+                  ]
                 },"outreach_memberships": {
                   Row: {
                     "client_id": string,"created_at": string,"role": string,"state": string,"updated_at": string,"user_id": string,"version": number
@@ -1130,6 +1249,9 @@ isOneToOne: false
 "acquire_outreach_sync_lock":
 { Args: { "p_seconds"?: number,"p_token": string }; Returns: boolean
                            },
+"authorize_outreach_compose":
+{ Args: { "p_claim": string,"p_claim_first"?: boolean,"p_command": string }; Returns: Json
+                           },
 "begin_outreach_account_check":
 { Args: { "p_account_id": string,"p_client_id": string }; Returns: string
                            },
@@ -1148,8 +1270,14 @@ isOneToOne: false
 "check_outreach_integration":
 { Args: { "p_actor": string,"p_actor_version": number,"p_id": string,"p_ok": boolean,"p_version": number }; Returns: undefined
                            },
+"checkpoint_outreach_compose":
+{ Args: { "p_campaign": string,"p_claim": string,"p_command": string,"p_list"?: string }; Returns: boolean
+                           },
 "claim_outreach_lead_alert":
 { Args: { "p_client_id": string,"p_user_id": string }; Returns: Json
+                           },
+"claim_outreach_linkedin_discovery":
+{ Args: Record<PropertyKey, never>; Returns: Json
                            },
 "claim_outreach_reply":
 { Args: { "p_command_id": string }; Returns: Json
@@ -1235,6 +1363,12 @@ isOneToOne: false
 "get_outreach_comment":
 { Args: { "p_client": string,"p_offset"?: number,"p_request": string }; Returns: Json
                            },
+"get_outreach_compose":
+{ Args: { "p_channel"?: string,"p_client": string,"p_lead"?: string }; Returns: Json
+                           },
+"get_outreach_linkedin_tracking":
+{ Args: { "p_client": string }; Returns: Json
+                           },
 "inspect_outreach_invitation":
 { Args: { "p_token": string }; Returns: {
               "client_id": string,"client_name": string,"expires_at": string,"invitation_id": string,"password_required": boolean,"role": string,"status": string
@@ -1276,6 +1410,11 @@ isOneToOne: false
 "mark_outreach_messages_read":
 { Args: { "ids": (string)[] }; Returns: number
                            },
+"next_outreach_linkedin_scan":
+{ Args: Record<PropertyKey, never>; Returns: {
+              "campaign_id": string,"client_id": string,"credential_ref": string,"failures": number,"page_offset": number,"remote_campaign_id": string,"remote_sender_ids": (string)[],"remote_workspace_id": string,"sender_ids": (string)[],"sender_versions": (number)[],"started_at": string,"workspace_id": string,"workspace_version": number
+            }[]
+                           },
 "next_outreach_network_campaign":
 { Args: Record<PropertyKey, never>; Returns: {
               "attempt_count": number,"client_id": string,"credential_ref": string,"id": string,"provider_campaign_id": string,"remote_sender_ids": (string)[],"remote_workspace_id": string,"sender_ids": (string)[],"sender_versions": (number)[],"workspace_id": string,"workspace_version": number
@@ -1289,6 +1428,9 @@ isOneToOne: false
                            },
 "outreach_portal_context":
 { Args: Record<PropertyKey, never>; Returns: Json
+                           },
+"prepare_outreach_compose":
+{ Args: { "p_body": string,"p_client": string,"p_command": string,"p_lead": string,"p_recipient": string,"p_sender": string,"p_subject": string }; Returns: Json
                            },
 "prepare_outreach_connection":
 { Args: { "p_action": string,"p_channel": string,"p_email"?: string,"p_person": string }; Returns: {
@@ -1355,6 +1497,12 @@ isOneToOne: false
 "read_outreach_reply":
 { Args: { "p_client_id": string,"p_command_id": string,"p_conversation_id": string }; Returns: Json
                            },
+"receive_outreach_linkedin_hint":
+{ Args: { "p_payload_hash": string,"p_workspace": string }; Returns: boolean
+                           },
+"receive_outreach_linkedin_hook":
+{ Args: { "p_payload_hash": string,"p_secret_hash": string,"p_workspace": string }; Returns: boolean
+                           },
 "record_worker_heartbeat":
 { Args: { "result_note"?: string,"succeeded": boolean,"worker_name": string }; Returns: undefined
                            },
@@ -1402,6 +1550,12 @@ isOneToOne: false
                            },
 "save_outreach_integration":
 { Args: { "p_actor": string,"p_actor_version": number,"p_channel": string,"p_id": string,"p_key": string,"p_label": string,"p_version": number,"p_workspace": string }; Returns: undefined
+                           },
+"save_outreach_linkedin_discovery":
+{ Args: { "p_campaigns": Json,"p_claim": string,"p_next_offset"?: number,"p_senders": Json,"p_version": number,"p_workspace": string }; Returns: boolean
+                           },
+"save_outreach_linkedin_scan":
+{ Args: { "p_campaign": string,"p_next_offset"?: number,"p_offset": number,"p_rows"?: Json,"p_sender_ids": (string)[],"p_sender_versions": (number)[],"p_started": string,"p_workspace": string,"p_workspace_version": number }; Returns: boolean
                            },
 "save_outreach_network_campaign":
 { Args: { "p_campaign_id": string,"p_name": string,"p_sender_ids": (string)[],"p_sender_versions": (number)[],"p_status": string,"p_totals": Json,"p_workspace_id": string,"p_workspace_version": number }; Returns: boolean

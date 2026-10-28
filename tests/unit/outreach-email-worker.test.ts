@@ -37,7 +37,7 @@ function harness(t: TestContext, options: {
       synced_at: now, messages_purged_at: null, totals: options.previousTotals ?? {} } }
   const db = (call: FetchCall) => {
     const url = new URL(call.url), table = url.pathname.split('/').at(-1)
-    if (url.pathname.includes('/rpc/')) return { body: table === 'next_outreach_network_campaign' ? [] : table === 'purge_outreach_messages' ? false : table === 'reserve_outreach_email_request' ? options.permit !== false : true }
+    if (url.pathname.includes('/rpc/')) return { body: table === 'claim_outreach_linkedin_discovery' ? null : ['next_outreach_network_campaign','next_outreach_linkedin_scan'].includes(table ?? '') ? [] : table === 'purge_outreach_messages' ? false : table === 'reserve_outreach_email_request' ? options.permit !== false : true }
     if (call.method !== 'GET' && call.method !== 'HEAD') return { body: null }
     if (table === 'outreach_sync_state') return { body: options.assigned === false || url.searchParams.get('outreach_campaigns.channel') === 'eq.linkedin' ? [] : [state] }
     if (table === 'outreach_reply_workspaces') return { body: { id: workspaceId, version: 1, remote_workspace_id: workspaceId, credential_ref: 'OUTREACH_INSTANTLY_UNIT', sync_enabled: true } }

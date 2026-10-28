@@ -13,3 +13,4 @@ skills-lock.json
 AGENTS.md
 README.md
 *.tsbuildinfo
+.artifacts/
