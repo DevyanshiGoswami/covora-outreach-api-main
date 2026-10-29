@@ -8,6 +8,10 @@
   "scripts": {
     "setup:local": "node scripts/local-portal.mjs setup",
     "dev:local": "node scripts/local-portal.mjs dev",
+    "dev:seed": "node scripts/dev-seed.mjs",
+    "dev:sync": "node scripts/dev-sync.mjs",
+    "mock": "node scripts/mock-instantly.mjs",
+    "dev:verify": "node scripts/dev-verify.mjs",
     "dev": "next dev --hostname 127.0.0.1 --port 3011",
     "build": "next build",
     "start": "next start",

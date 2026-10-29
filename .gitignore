@@ -15,3 +15,7 @@ skills-lock.json
 
 # Private local owner demo credentials
 .owner-demo.json
+
+# Development-only mock sending-engine state
+.mock-instantly.json
+.mock-instantly.json.*.tmp

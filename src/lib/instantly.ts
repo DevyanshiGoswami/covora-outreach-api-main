@@ -1,7 +1,8 @@
 import 'server-only'
 import { z } from 'zod'
+import { instantlyTransport } from './instantly-transport'
 
-/** Scoped account, results and existing-thread reply adapter. No campaign mutation,
+/** Scoped account, results and existing-thread reply adapter. Portal campaign creation lives in portal-outreach-provider; no other campaign mutation,
  * mailbox provisioning, OAuth setup or shared credential fallback is exported. */
 const BASE_URL = 'https://api.instantly.ai/api/v2'
 
@@ -34,7 +35,7 @@ export async function verifyScopedInstantlyAccount(email: string, options: {
     const signal = options.signal ? AbortSignal.any([deadline, options.signal]) : deadline
     const read = async (path: string) => {
       signal.throwIfAborted()
-      return (options.fetch ?? fetch)(`${BASE_URL}${path}`, {
+      return (options.fetch ?? instantlyTransport())(`${BASE_URL}${path}`, {
         method: 'GET', headers: { Authorization: `Bearer ${options.apiKey}` },
         cache: 'no-store', redirect: 'error', signal,
       })
@@ -96,7 +97,7 @@ async function instantlyFetch<T>(
     await init?.beforeAttempt?.()
     const remaining = init?.deadline === undefined ? 30_000 : init.deadline - Date.now()
     if (remaining <= 0) throw new InstantlyError('Instantly request deadline reached', 408)
-    const res = await fetch(url, {
+    const res = await instantlyTransport()(url, {
       method: init?.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${key}`,
@@ -441,7 +442,7 @@ import type { ReplyProviderContext, ScopedReplyOptions, PrepareReason, SendOutco
 export async function verifyScopedInstantlyWorkspace(expectedId: string, options: ScopedReplyOptions): Promise<boolean> {
   if (!z.uuid().safeParse(expectedId).success || !options.apiKey.trim()) return false
   try {
-    const response = await (options.fetch ?? fetch)(`${BASE_URL}/workspaces/current`, {
+    const response = await (options.fetch ?? instantlyTransport())(`${BASE_URL}/workspaces/current`, {
       headers: { Authorization: `Bearer ${options.apiKey}` }, signal: replySignal(options), redirect: 'error', cache: 'no-store',
     })
     if (!response.ok) return false
@@ -470,7 +471,7 @@ export async function prepareScopedInstantlyReply(context: ReplyProviderContext,
   const signal = replySignal(options)
   const read = async (path: string) => {
     signal.throwIfAborted()
-    const response = await (options.fetch ?? fetch)(`${BASE_URL}${path}`, { method: 'GET', headers: { Authorization: `Bearer ${options.apiKey}` }, cache: 'no-store', redirect: 'error', signal })
+    const response = await (options.fetch ?? instantlyTransport())(`${BASE_URL}${path}`, { method: 'GET', headers: { Authorization: `Bearer ${options.apiKey}` }, cache: 'no-store', redirect: 'error', signal })
     if (!response.ok) throw new Error('Reply preparation unavailable')
     return await response.json() as unknown
   }
@@ -494,7 +495,7 @@ export async function sendScopedInstantlyReply(context: ReplyProviderContext, op
   try {
     const signal = replySignal(options)
     if (signal.aborted) return { status: 'failed', remoteMessageId: null }
-    const response = await (options.fetch ?? fetch)(`${BASE_URL}/emails/reply`, {
+    const response = await (options.fetch ?? instantlyTransport())(`${BASE_URL}/emails/reply`, {
       method: 'POST', headers: { Authorization: `Bearer ${options.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ eaccount: context.senderAddress, reply_to_uuid: context.remoteReplyToId, subject: context.subject, body: { text: context.bodyText } }),
       cache: 'no-store', redirect: 'error', signal,

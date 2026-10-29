@@ -12,6 +12,51 @@ Use Node 22, `npm ci`, and the project's isolated Supabase stack. Local services
 
 Run `npm run dev` on port 3011. `/api/health` reports configuration readiness and feature gates; it does not claim provider or database connectivity. Public routes under `/api/outbound` require a verified bearer session from the independent Auth project. Database RLS and guarded RPCs authorize every tenant operation.
 
+## Local Inbox and New outreach (development only)
+
+Use an **empty** development database project, never production. Settings in `.env.local`:
+
+```
+OUTREACH_DEV_SEED_PROJECT_REF=<same value as OUTREACH_SUPABASE_PROJECT_REF>
+OUTREACH_INSTANTLY_MODE=mock
+OUTREACH_PORTAL_SEND_ENABLED=true
+OUTREACH_REPLIES_ENABLED=true
+OUTREACH_SYNC_ENABLED=true
+OUTREACH_INSTANTLY_WEBHOOK_SECRET=<40+ random characters>
+CRON_SECRET=<random string>
+```
+
+1. `npx supabase db push` (applies migrations to the linked development project).
+2. `npm run dev:seed` — resets and creates the workspace "Covora · Dev". It refuses any database that contains other clients and any production environment. `npm run dev:seed -- --clear` removes the seed data.
+3. `npm run dev` (backend, port 3011) and, in the `covora-outreach` frontend, `npm run dev` (port 3001) with `OUTBOUND_API_ORIGIN=http://127.0.0.1:3011` and the same public database URL and anon key.
+4. Sign in at http://127.0.0.1:3001/login:
+
+| Role | Email | Development password | Sender mailbox |
+|---|---|---|---|
+| Admin (agency owner) | admin@covora.test | CovoraDevAdmin#2026 | — |
+| User | alice@covora.test | CovoraDevAlice#2026 | alice.sender@covora-mock.test |
+| User | bob@covora.test | CovoraDevBob#2026! | bob.sender@covora-mock.test |
+
+These accounts exist only in a seeded development database. Alice and Bob each have one conversation; the admin sees both. A third, non-portal thread stays hidden because the workspace uses the portal-only Inbox.
+
+5. `npm run dev:verify` — signs in as each user and checks positive and denied access.
+
+Mock sending engine (no real API, no real mail; state in `.mock-instantly.json`):
+
+| Command | Simulates |
+|---|---|
+| Inbox → **New outreach** | Send: creates a one-lead campaign and its first email |
+| `npm run mock -- reply priya@prospect-mock.test "text"` | Prospect reply + `reply_received` webhook |
+| `npm run mock -- reply <email> --twice` | Same webhook delivered twice (no duplicate message) |
+| `npm run mock -- reply <email> --no-webhook` then `npm run dev:sync` | Missed webhook recovered by the backup sync |
+| `npm run mock -- outside` | Reply in a campaign created outside Covora (ignored) |
+| `npm run mock -- unrelated` | Ordinary mail to the sender mailbox (ignored) |
+| `npm run dev:sync -- --watch` | Local stand-in for the per-minute cron |
+
+The webhook only queues a scoped fetch for a recorded portal campaign; the sync worker then re-reads that campaign from the provider and stores messages keyed by provider email ID, so duplicates cannot be created. The backup sync polls only campaigns recorded in this database.
+
+**Real integration test** (`OUTREACH_INSTANTLY_MODE=live`): set `OUTREACH_DEV_INSTANTLY_WORKSPACE_ID` before seeding, and list the exact test addresses in `OUTREACH_PORTAL_ALLOWED_SENDERS` and `OUTREACH_PORTAL_ALLOWED_RECIPIENTS`. Any other sender or recipient is refused before a provider call. Do not create the provider webhook in the shared workspace without approval.
+
 ## Verification
 
 `npm run test:unit`, `npm run test:db`, `npm run lint`, `npm run typecheck`, `npm audit --audit-level=high`, and `npm run build` must pass. The DB test helper refuses all targets except the isolated local gateway. Generate types from this schema with `npm run gen:types`; retain only generated TypeScript, never CLI status text.
